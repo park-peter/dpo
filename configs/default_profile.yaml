@@ -1,0 +1,199 @@
+# =============================================================================
+# DPO (Data Profiling Orchestrator) Configuration
+# =============================================================================
+#
+# This file defines the configuration for automated Data Profiling monitor
+# provisioning across Unity Catalog tables.
+#
+# Required: Replace warehouse_id and catalog_name with your values.
+# =============================================================================
+
+# =============================================================================
+# Orchestration Mode
+# =============================================================================
+# full             - Complete pipeline (monitors + unified views + alerts + dashboard)
+# bulk_provision_only - Create monitors only (simplest, fastest onboarding)
+#
+# Use bulk_provision_only when:
+#   - You have 100+ tables and want the fastest setup
+#   - You prefer using Databricks' native per-table UI for results
+#   - You don't need cross-table unified observability yet
+mode: "full"
+
+# =============================================================================
+# Monitor Groups
+# =============================================================================
+# Tag name used to group tables for separate aggregation/alerting/dashboards.
+# Tables with monitor_group: "ml_team" get their own unified view and dashboard.
+# Tables without this tag go to the "default" group.
+monitor_group_tag: "monitor_group"
+
+# SQL Warehouse for statement execution (pre-flight checks, cardinality queries)
+# Required: Get this from your Databricks workspace SQL Warehouses page
+warehouse_id: "YOUR_WAREHOUSE_ID"
+
+# -----------------------------------------------------------------------------
+# Discovery Configuration
+# -----------------------------------------------------------------------------
+# Defines which tables to include in monitoring
+
+discovery:
+  # Target catalog to scan
+  catalog_name: "prod"
+
+  # Tags required to enroll a table for monitoring
+  # Tables must have ALL specified tags to be included
+  include_tags:
+    monitor_enabled: "true"
+
+  # If specified, ONLY scan these schemas (glob patterns supported)
+  # When null, scans all schemas except those in exclude_schemas
+  # Example: ["ml_models", "data_warehouse_*"]
+  include_schemas: null
+
+  # Schemas to exclude (glob patterns supported)
+  # Common patterns: information_schema, tmp_*, dev_*, sandbox_*
+  exclude_schemas:
+    - "information_schema"
+    - "tmp_*"
+    - "dev_*"
+    - "sandbox_*"
+
+# -----------------------------------------------------------------------------
+# Profile Defaults
+# -----------------------------------------------------------------------------
+# Default settings applied to all monitors
+# Supports three profile types: INFERENCE, SNAPSHOT, TIMESERIES
+
+profile_defaults:
+  # Profile type determines what metrics are computed:
+  #   INFERENCE  - ML model monitoring (drift + model quality metrics)
+  #   SNAPSHOT   - Static data quality checks (simplest, no time windows)
+  #   TIMESERIES - Time-windowed data quality (requires timestamp column)
+  profile_type: "INFERENCE"
+
+  # Aggregation granularity for metrics
+  # Options: "5 minutes", "30 minutes", "1 hour", "1 day", "1 week", "1 month"
+  granularity: "1 day"
+
+  # Schema where metric tables will be created (drift_metrics, profile_metrics)
+  output_schema_name: "monitoring_results"
+
+  # Optional baseline table for drift comparison
+  # When specified, drift is computed against this baseline (e.g., training data)
+  # instead of just consecutive time windows
+  # baseline_table: "prod.ml.training_data_v2"
+  baseline_table: null
+
+  # Columns to slice by (auto-detected if present in table)
+  # High-cardinality columns are automatically filtered out
+  slicing_columns:
+    - model_version
+    - region
+
+  # Skip slicing columns with more distinct values than this threshold
+  # Prevents DBU cost explosion from high-cardinality slicing
+  max_slicing_cardinality: 50
+
+  # -----------------------------------------------------------------------------
+  # TimeSeries-specific settings (used when profile_type: TIMESERIES)
+  # -----------------------------------------------------------------------------
+  # timeseries_settings:
+  #   timestamp_col: "event_time"
+
+  # -----------------------------------------------------------------------------
+  # Inference-specific settings (used when profile_type: INFERENCE)
+  # -----------------------------------------------------------------------------
+  inference_settings:
+    # Problem type: PROBLEM_TYPE_CLASSIFICATION or PROBLEM_TYPE_REGRESSION
+    # Can be overridden per-table via monitor_problem_type tag
+    problem_type: "PROBLEM_TYPE_CLASSIFICATION"
+
+    # Column containing model predictions
+    prediction_col: "prediction"
+
+    # Column containing prediction probabilities/scores (for AUC/ROC metrics)
+    # Required for classification models to get full metrics
+    prediction_score_col: "prediction_proba"
+
+    # Column containing ground truth labels (optional)
+    label_col: "label"
+
+    # Column containing inference timestamp
+    timestamp_col: "timestamp"
+
+    # Column containing model version/ID (optional)
+    model_id_col: "model_version"
+
+  # -----------------------------------------------------------------------------
+  # Custom Metrics (optional)
+  # -----------------------------------------------------------------------------
+  # Define business-specific metrics computed alongside standard profiles
+  # custom_metrics:
+  #   - name: "revenue_sum"
+  #     metric_type: "aggregate"  # aggregate or derived
+  #     input_columns: ["revenue"]
+  #     definition: "SUM(revenue)"
+  #     output_type: "double"
+  #   - name: "null_ratio_change"
+  #     metric_type: "derived"
+  #     input_columns: ["null_count", "count"]
+  #     definition: "{{null_count}} / {{count}}"
+  #     output_type: "double"
+  custom_metrics: []
+
+# -----------------------------------------------------------------------------
+# Alerting Configuration
+# -----------------------------------------------------------------------------
+# SQL Alert settings for drift detection and data quality
+
+alerting:
+  # Enable automatic alert creation
+  enable_standard_alerts: true
+
+  # Drift threshold: Jensen-Shannon divergence for CRITICAL alerts
+  # WARNING alerts trigger at half this value (0.1 if threshold is 0.2)
+  drift_threshold: 0.2
+
+  # Data Quality thresholds (set to null to disable)
+  # Alert if null rate exceeds this threshold (0.1 = 10%)
+  null_rate_threshold: 0.1
+
+  # Alert if row count falls below this minimum
+  row_count_min: 1000
+
+  # Alert if distinct count falls below this minimum (cardinality check)
+  # distinct_count_min: 10
+  distinct_count_min: null
+
+  # Default notifications (fallback for groups without specific routing)
+  default_notifications:
+    - "mlops-alerts@company.com"
+
+  # Per-group notification routing (optional)
+  # Groups not listed here use default_notifications
+  group_notifications:
+    # ml_team:
+    #   - "ml-team@company.com"
+    #   - "ml-oncall@company.com"
+    # data_eng:
+    #   - "data-eng@company.com"
+    # "default" group (tables without monitor_group tag) uses default_notifications
+
+# -----------------------------------------------------------------------------
+# Operational Settings
+# -----------------------------------------------------------------------------
+
+# Dry run mode: Preview changes without executing
+# Set to true to see impact report before committing
+dry_run: false
+
+# Orphan cleanup: Delete monitors for tables that no longer have monitor_enabled tag
+# Set to true to automatically clean up unused monitors
+cleanup_orphans: false
+
+# Dashboard deployment: Auto-deploy Lakeview dashboard
+deploy_dashboard: true
+
+# Path for dashboard deployment
+dashboard_parent_path: "/Workspace/Shared/DPO"
