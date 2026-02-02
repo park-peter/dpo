@@ -1,0 +1,199 @@
+# =============================================================================
+# DPO (Data Profiling Orchestrator) Configuration
+# =============================================================================
+#
+# This file defines the configuration for automated Data Profiling monitor
+# provisioning across Unity Catalog tables.
+#
+# Required: Replace catalog_name, warehouse_id, and monitored_tables with your values.
+# =============================================================================
+
+# =============================================================================
+# Core Settings
+# =============================================================================
+
+# Target catalog - all tables must be in this catalog
+catalog_name: "prod"
+
+# SQL Warehouse for statement execution (pre-flight checks, cardinality queries)
+# Required: Get this from your Databricks workspace SQL Warehouses page
+warehouse_id: "YOUR_WAREHOUSE_ID"
+
+# Orchestration Mode
+# full             - Complete pipeline (monitors + unified views + alerts + dashboard)
+# bulk_provision_only - Create monitors only (simplest, fastest onboarding)
+mode: "full"
+
+# =============================================================================
+# Table Sources
+# =============================================================================
+# DPO supports two ways to specify tables:
+#   1. monitored_tables: Explicit per-table config (YAML is source of truth)
+#   2. include_tagged_tables: Discover tables via UC tags
+#
+# You can use either or both. When a table appears in both sources,
+# monitored_tables takes precedence (YAML wins).
+
+# If true, discover tables via UC tags in addition to monitored_tables
+include_tagged_tables: false
+
+# Discovery config - only needed if include_tagged_tables: true
+# discovery:
+#   include_tags:
+#     monitor_enabled: "true"
+#   exclude_schemas:
+#     - "information_schema"
+#     - "tmp_*"
+#     - "dev_*"
+#   # Optional: only scan specific schemas
+#   # include_schemas:
+#   #   - "ml_models"
+#   #   - "data_warehouse_*"
+
+# =============================================================================
+# Per-Table Configuration (monitored_tables)
+# =============================================================================
+# Define tables explicitly with per-table settings.
+# Parameter names mirror the Databricks SDK API.
+#
+# Available settings per table:
+#   - baseline_table_name: Baseline table for drift comparison
+#   - slicing_exprs: List of columns to slice by
+#   - granularity: Aggregation granularity ("1 day", "1 hour", etc.)
+#   - problem_type: PROBLEM_TYPE_CLASSIFICATION or PROBLEM_TYPE_REGRESSION
+#   - prediction_column: Column containing predictions
+#   - label_column: Column containing ground truth labels
+#   - timestamp_column: Column containing timestamps
+#   - model_id_column: Column containing model version/ID
+
+monitored_tables:
+  # Example: ML churn prediction model
+  prod.ml.churn_predictions:
+    baseline_table_name: "prod.ml.churn_training_baseline"
+    label_column: "churned"
+    prediction_column: "churn_probability"
+    timestamp_column: "prediction_time"
+    problem_type: "PROBLEM_TYPE_CLASSIFICATION"
+    granularity: "1 day"
+    slicing_exprs:
+      - "region"
+      - "customer_segment"
+
+  # Example: Revenue forecasting model (regression)
+  prod.ml.revenue_forecast:
+    baseline_table_name: "prod.ml.revenue_baseline"
+    label_column: "actual_revenue"
+    prediction_column: "predicted_revenue"
+    timestamp_column: "forecast_date"
+    problem_type: "PROBLEM_TYPE_REGRESSION"
+    granularity: "1 day"
+
+  # Example: Table with minimal config (uses profile_defaults)
+  prod.ml.fraud_detection:
+    label_column: "is_fraud"
+
+# =============================================================================
+# Profile Defaults
+# =============================================================================
+# Default settings applied to all monitors when not overridden in monitored_tables.
+# Uses SDK-style parameter names.
+
+profile_defaults:
+  # Profile type determines what metrics are computed:
+  #   INFERENCE  - ML model monitoring (drift + model quality metrics)
+  #   SNAPSHOT   - Static data quality checks (simplest, no time windows)
+  #   TIMESERIES - Time-windowed data quality (requires timestamp column)
+  profile_type: "INFERENCE"
+
+  # Aggregation granularity for metrics
+  # Options: "5 minutes", "30 minutes", "1 hour", "1 day", "1 week", "1 month"
+  granularity: "1 day"
+
+  # Schema where metric tables will be created (drift_metrics, profile_metrics)
+  output_schema_name: "monitoring_results"
+
+  # Default slicing expressions (high-cardinality columns auto-filtered)
+  slicing_exprs: []
+
+  # Skip slicing columns with more distinct values than this threshold
+  max_slicing_cardinality: 50
+
+  # Create per-monitor Databricks dashboards
+  # Set to false if creating monitors for many tables
+  create_builtin_dashboard: false
+
+  # Default inference settings (SDK parameter names)
+  problem_type: "PROBLEM_TYPE_CLASSIFICATION"
+  prediction_column: "prediction"
+  label_column: "label"
+  timestamp_column: "timestamp"
+  model_id_column: null
+
+  # TimeSeries timestamp column (used when profile_type: TIMESERIES)
+  timeseries_timestamp_column: null
+
+  # Custom metrics (optional)
+  # custom_metrics:
+  #   - name: "revenue_sum"
+  #     metric_type: "aggregate"
+  #     input_columns: ["revenue"]
+  #     definition: "SUM(revenue)"
+  #     output_type: "double"
+  custom_metrics: []
+
+# =============================================================================
+# Monitor Groups
+# =============================================================================
+# Tag name used to group tables for separate aggregation/alerting/dashboards.
+# Tables with monitor_group: "ml_team" get their own unified view and dashboard.
+# Tables without this tag go to the "default" group.
+monitor_group_tag: "monitor_group"
+
+# =============================================================================
+# Alerting Configuration
+# =============================================================================
+
+alerting:
+  # Enable automatic alert creation
+  enable_aggregated_alerts: true
+
+  # Drift threshold: Jensen-Shannon divergence for CRITICAL alerts
+  # WARNING alerts trigger at half this value (0.1 if threshold is 0.2)
+  drift_threshold: 0.2
+
+  # Data Quality thresholds (set to null to disable)
+  null_rate_threshold: 0.1
+  row_count_min: 1000
+  distinct_count_min: null
+
+  # Default notifications (fallback for groups without specific routing)
+  default_notifications:
+    - "mlops-alerts@company.com"
+
+  # Per-group notification routing (optional)
+  group_notifications: {}
+    # ml_team:
+    #   - "ml-team@company.com"
+    # data_eng:
+    #   - "data-eng@company.com"
+
+# =============================================================================
+# Operational Settings
+# =============================================================================
+
+# Dry run mode: Preview changes without executing
+dry_run: false
+
+# Orphan cleanup: Delete monitors for tables no longer in monitored_tables or tagged
+cleanup_orphans: false
+
+# Dashboard deployment: Auto-deploy aggregated Lakeview dashboard
+deploy_aggregated_dashboard: true
+
+# Path for dashboard deployment
+dashboard_parent_path: "/Workspace/Shared/DPO"
+
+# Wait for monitors to become ACTIVE before aggregation
+wait_for_monitors: true
+wait_timeout_seconds: 1200
+wait_poll_interval: 20
