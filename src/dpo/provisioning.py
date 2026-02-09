@@ -7,7 +7,7 @@ Manages the create/update lifecycle of Data Profiling monitors.
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.catalog import TableInfo
@@ -15,6 +15,7 @@ from databricks.sdk.service.dataquality import (
     AggregationGranularity,
     DataProfilingConfig,
     DataProfilingCustomMetric,
+    DataProfilingCustomMetricType,
     InferenceLogConfig,
     InferenceProblemType,
     Monitor,
@@ -33,7 +34,7 @@ from tenacity import (
 
 from dpo.config import OrchestratorConfig
 from dpo.discovery import DiscoveredTable
-from dpo.utils import hash_config
+from dpo.utils import calculate_config_diff, hash_config
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class ProvisioningResult:
     action: Literal[
         "created",
         "updated",
+        "no_change",
         "skipped_quota",
         "skipped_no_pk",
         "skipped_cardinality",
@@ -183,24 +185,33 @@ class ProfileProvisioner:
             ValueError: If any configured column is not found in the table.
         """
         table_columns = {col.name.lower() for col in table.columns}
+        columns_to_check: List[tuple[str, str]] = []
 
-        columns_to_check = []
+        profile_type = self.config.profile_defaults.profile_type
 
-        label_col = self._resolve_setting(table, "label_column")
-        if label_col:
-            columns_to_check.append(("label_column", label_col))
+        if profile_type == "INFERENCE":
+            prediction_col = self._resolve_setting(table, "prediction_column")
+            if prediction_col:
+                columns_to_check.append(("prediction_column", prediction_col))
 
-        prediction_col = self._resolve_setting(table, "prediction_column")
-        if prediction_col:
-            columns_to_check.append(("prediction_column", prediction_col))
+            timestamp_col = self._resolve_setting(table, "timestamp_column")
+            if timestamp_col:
+                columns_to_check.append(("timestamp_column", timestamp_col))
 
-        timestamp_col = self._resolve_setting(table, "timestamp_column")
-        if timestamp_col:
-            columns_to_check.append(("timestamp_column", timestamp_col))
+            label_col = self._resolve_setting(table, "label_column")
+            if label_col:
+                columns_to_check.append(("label_column", label_col))
 
-        model_id_col = self._resolve_setting(table, "model_id_column")
-        if model_id_col:
-            columns_to_check.append(("model_id_column", model_id_col))
+            model_id_col = self._resolve_setting(table, "model_id_column")
+            if model_id_col:
+                columns_to_check.append(("model_id_column", model_id_col))
+
+        elif profile_type == "TIMESERIES":
+            ts_timestamp = self._resolve_setting(table, "timestamp_column")
+            if not ts_timestamp:
+                ts_timestamp = self.config.profile_defaults.timeseries_timestamp_column
+            if ts_timestamp:
+                columns_to_check.append(("timeseries_timestamp_column", ts_timestamp))
 
         for setting_name, column_name in columns_to_check:
             if column_name.lower() not in table_columns:
@@ -310,7 +321,14 @@ class ProfileProvisioner:
             if existing:
                 desired_config = self._build_config_dict(table)
                 desired_hash = hash_config(desired_config)
-                report.add(table.full_name, "update", "config drift detected")
+                if self._has_config_drift(existing, table):
+                    report.add(table.full_name, "update", "config drift detected")
+                else:
+                    report.add(
+                        table.full_name,
+                        "no_change",
+                        "monitor config already in sync",
+                    )
                 results.append(ProvisioningResult(
                     table_name=table.full_name,
                     action="dry_run",
@@ -365,15 +383,31 @@ class ProfileProvisioner:
             )
             config_hash = hash_config(self._build_config_dict(table))
 
+            monitor_obj = Monitor(
+                object_type="table",
+                object_id=table_info.table_id,
+                data_profiling_config=config,
+            )
+
             if existing:
+                if not self._has_config_drift(existing, table):
+                    logger.info(
+                        "No config changes for %s; skipping update", table.full_name
+                    )
+                    return ProvisioningResult(
+                        table_name=table.full_name,
+                        action="no_change",
+                        success=True,
+                        config_hash=config_hash,
+                    )
+
                 self.w.data_quality.update_monitor(
                     object_type="table",
                     object_id=table_info.table_id,
-                    data_profiling_config=config,
+                    monitor=monitor_obj,
+                    update_mask="data_profiling_config",
                 )
                 logger.info("Updated monitor for %s", table.full_name)
-
-                self._provision_custom_metrics(table_info.table_id)
 
                 return ProvisioningResult(
                     table_name=table.full_name,
@@ -382,22 +416,14 @@ class ProfileProvisioner:
                     config_hash=config_hash,
                 )
             else:
-                monitor = self.w.data_quality.create_monitor(
-                    monitor=Monitor(
-                        object_type="table",
-                        object_id=table_info.table_id,
-                        data_profiling_config=config,
-                    )
-                )
+                created = self.w.data_quality.create_monitor(monitor=monitor_obj)
                 logger.info("Created monitor for %s", table.full_name)
-
-                self._provision_custom_metrics(table_info.table_id)
 
                 return ProvisioningResult(
                     table_name=table.full_name,
                     action="created",
                     success=True,
-                    monitor_id=getattr(monitor, "monitor_id", None),
+                    monitor_id=getattr(created, "monitor_id", None),
                     config_hash=config_hash,
                 )
 
@@ -451,6 +477,7 @@ class ProfileProvisioner:
         skip_builtin_dashboard = not self.config.profile_defaults.create_builtin_dashboard
 
         baseline_table = self._resolve_setting(table, "baseline_table_name")
+        custom_metrics = self._build_custom_metrics()
 
         if profile_type == "SNAPSHOT":
             return DataProfilingConfig(
@@ -460,6 +487,7 @@ class ProfileProvisioner:
                 snapshot=SnapshotConfig(),
                 slicing_exprs=slicing_exprs if slicing_exprs else None,
                 baseline_table_name=baseline_table,
+                custom_metrics=custom_metrics or None,
             )
 
         elif profile_type == "TIMESERIES":
@@ -476,6 +504,7 @@ class ProfileProvisioner:
                 ),
                 slicing_exprs=slicing_exprs if slicing_exprs else None,
                 baseline_table_name=baseline_table,
+                custom_metrics=custom_metrics or None,
             )
 
         else:  # INFERENCE
@@ -499,39 +528,40 @@ class ProfileProvisioner:
                 ),
                 slicing_exprs=slicing_exprs if slicing_exprs else None,
                 baseline_table_name=baseline_table,
+                custom_metrics=custom_metrics or None,
             )
 
-    def _provision_custom_metrics(self, table_id: str) -> None:
-        """Register custom metrics for a table after monitor creation.
+    METRIC_TYPE_MAP = {
+        "aggregate": DataProfilingCustomMetricType.DATA_PROFILING_CUSTOM_METRIC_TYPE_AGGREGATE,
+        "derived": DataProfilingCustomMetricType.DATA_PROFILING_CUSTOM_METRIC_TYPE_DERIVED,
+    }
 
-        Args:
-            table_id: The table ID to register metrics for.
+    def _build_custom_metrics(self) -> List[DataProfilingCustomMetric]:
+        """Build SDK custom metric objects from config.
+
+        Returns:
+            List of DataProfilingCustomMetric to embed in DataProfilingConfig.
         """
-        custom_metrics = self.config.profile_defaults.custom_metrics
-        if not custom_metrics:
-            return
+        config_metrics = self.config.profile_defaults.custom_metrics
+        if not config_metrics:
+            return []
 
-        for metric in custom_metrics:
-            try:
-                custom_metric = DataProfilingCustomMetric(
+        sdk_metrics = []
+        for metric in config_metrics:
+            metric_type = self.METRIC_TYPE_MAP.get(metric.metric_type)
+            if metric_type is None:
+                logger.warning("Unknown metric type '%s', skipping", metric.metric_type)
+                continue
+            sdk_metrics.append(
+                DataProfilingCustomMetric(
                     name=metric.name,
-                    type=metric.metric_type,
+                    type=metric_type,
                     input_columns=metric.input_columns,
                     definition=metric.definition,
                     output_data_type=metric.output_type,
                 )
-                self.w.data_quality.create_metric(
-                    object_type="table",
-                    object_id=table_id,
-                    metric=custom_metric,
-                )
-                logger.info(
-                    "Created custom metric '%s' for table %s", metric.name, table_id
-                )
-            except Exception as e:
-                logger.warning(
-                    "Failed to create custom metric '%s': %s", metric.name, e
-                )
+            )
+        return sdk_metrics
 
     def _build_config_dict(self, table: DiscoveredTable) -> dict:
         """Build config dict for hashing."""
@@ -539,9 +569,14 @@ class ProfileProvisioner:
         base_config = {
             "profile_type": profile_type,
             "output_schema_name": self.output_schema,
-            "granularity": self._resolve_setting(table, "granularity"),
+            "granularity": (
+                None
+                if profile_type == "SNAPSHOT"
+                else self._resolve_setting(table, "granularity")
+            ),
             "slicing_exprs": self._resolve_setting(table, "slicing_exprs"),
             "baseline_table_name": self._resolve_setting(table, "baseline_table_name"),
+            "custom_metrics": self._serialize_custom_metrics_from_config(),
         }
 
         if profile_type == "INFERENCE":
@@ -550,6 +585,7 @@ class ProfileProvisioner:
                 "prediction_column": self._resolve_setting(table, "prediction_column"),
                 "label_column": self._resolve_setting(table, "label_column"),
                 "timestamp_column": self._resolve_setting(table, "timestamp_column"),
+                "model_id_column": self._resolve_setting(table, "model_id_column"),
             })
         elif profile_type == "TIMESERIES":
             ts_col = self._resolve_setting(table, "timestamp_column")
@@ -558,6 +594,111 @@ class ProfileProvisioner:
             base_config["timestamp_column"] = ts_col
 
         return base_config
+
+    def _serialize_custom_metrics_from_config(self) -> List[Dict[str, Any]]:
+        """Serialize configured custom metrics for deterministic comparisons."""
+        serialized = []
+        for metric in self.config.profile_defaults.custom_metrics:
+            serialized.append(
+                {
+                    "name": metric.name,
+                    "metric_type": metric.metric_type,
+                    "input_columns": metric.input_columns,
+                    "definition": metric.definition,
+                    "output_type": metric.output_type,
+                }
+            )
+        return serialized
+
+    def _normalize_granularity(self, granularity: Any) -> Optional[str]:
+        """Normalize SDK granularity enum/string to config string."""
+        if granularity is None:
+            return None
+        if isinstance(granularity, str):
+            if granularity in self.GRANULARITY_MAP:
+                return granularity
+            enum_to_name = {v.value: k for k, v in self.GRANULARITY_MAP.items()}
+            return enum_to_name.get(granularity)
+        enum_value = getattr(granularity, "value", None)
+        if enum_value:
+            enum_to_name = {v.value: k for k, v in self.GRANULARITY_MAP.items()}
+            return enum_to_name.get(enum_value)
+        return None
+
+    def _extract_existing_config(self, monitor: Monitor) -> Dict[str, Any]:
+        """Extract config fields from an existing monitor for drift checks."""
+        if not monitor.data_profiling_config:
+            return {}
+
+        cfg = monitor.data_profiling_config
+        profile_type = "SNAPSHOT"
+        if cfg.inference_log:
+            profile_type = "INFERENCE"
+        elif cfg.time_series:
+            profile_type = "TIMESERIES"
+
+        existing = {
+            "profile_type": profile_type,
+            "output_schema_name": self.output_schema,
+            "granularity": None,
+            "slicing_exprs": cfg.slicing_exprs or None,
+            "baseline_table_name": cfg.baseline_table_name,
+            "custom_metrics": [],
+        }
+
+        if cfg.custom_metrics:
+            metric_type_map = {
+                "DATA_PROFILING_CUSTOM_METRIC_TYPE_AGGREGATE": "aggregate",
+                "DATA_PROFILING_CUSTOM_METRIC_TYPE_DERIVED": "derived",
+            }
+            existing["custom_metrics"] = [
+                {
+                    "name": m.name,
+                    "metric_type": metric_type_map.get(
+                        getattr(m.type, "value", str(m.type)), str(m.type).lower()
+                    ),
+                    "input_columns": m.input_columns or [],
+                    "definition": m.definition,
+                    "output_type": m.output_data_type,
+                }
+                for m in cfg.custom_metrics
+            ]
+
+        if profile_type == "INFERENCE" and cfg.inference_log:
+            inference = cfg.inference_log
+            existing["problem_type"] = (
+                inference.problem_type.value if inference.problem_type else None
+            )
+            existing["prediction_column"] = inference.prediction_column
+            existing["label_column"] = inference.label_column
+            existing["timestamp_column"] = inference.timestamp_column
+            existing["model_id_column"] = inference.model_id_column
+            if inference.granularities:
+                existing["granularity"] = self._normalize_granularity(
+                    inference.granularities[0]
+                )
+        elif profile_type == "TIMESERIES" and cfg.time_series:
+            series = cfg.time_series
+            existing["timestamp_column"] = series.timestamp_column
+            if series.granularities:
+                existing["granularity"] = self._normalize_granularity(
+                    series.granularities[0]
+                )
+        return existing
+
+    def _has_config_drift(self, existing_monitor: Monitor, table: DiscoveredTable) -> bool:
+        """Compare desired monitor config against existing monitor config."""
+        try:
+            existing_config = self._extract_existing_config(existing_monitor)
+            desired_config = self._build_config_dict(table)
+            return bool(calculate_config_diff(existing_config, desired_config))
+        except Exception as exc:
+            logger.warning(
+                "Failed to compare monitor config for %s (%s); assuming drift",
+                table.full_name,
+                exc,
+            )
+            return True
 
     def _resolve_problem_type(self, table: DiscoveredTable) -> InferenceProblemType:
         """Resolve problem type: monitored_tables > UC tag > profile_defaults > auto-detect."""
@@ -653,7 +794,7 @@ class ProfileProvisioner:
     def _get_monitor_count(self) -> int:
         """Get current number of monitors."""
         try:
-            monitors = list(self.w.data_quality.list_monitors())
+            monitors = list(self.w.data_quality.list_monitor())
             return len(monitors)
         except Exception:
             return 0
@@ -706,7 +847,7 @@ class ProfileProvisioner:
         orphans = []
 
         try:
-            all_monitors = list(self.w.data_quality.list_monitors())
+            all_monitors = list(self.w.data_quality.list_monitor())
 
             for monitor in all_monitors:
                 table_name = self._get_table_name_from_monitor(monitor)
@@ -855,7 +996,6 @@ def get_monitor_statuses(
     Returns:
         List of MonitorStatus for each table.
     """
-    from databricks.sdk.service.dataquality import DataProfilingStatus
 
     statuses = []
 
@@ -912,13 +1052,8 @@ def wait_for_monitors(
         Final list of MonitorStatus for each table.
     """
     import time
-    from databricks.sdk.service.dataquality import DataProfilingStatus
 
-    terminal_states = {
-        DataProfilingStatus.DATA_PROFILING_STATUS_ACTIVE,
-        DataProfilingStatus.DATA_PROFILING_STATUS_FAILED,
-        DataProfilingStatus.DATA_PROFILING_STATUS_ERROR,
-    }
+    from databricks.sdk.service.dataquality import DataProfilingStatus
 
     start_time = time.time()
     pending_tables = set(t.full_name for t in tables)

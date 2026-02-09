@@ -44,7 +44,7 @@ class DiscoveredTable:
 class TableDiscovery:
     """
     Discovers tables in Unity Catalog based on tags and filters.
-    
+
     Features:
     - Filter by configurable tags (e.g., monitor_enabled=true)
     - Exclude schemas matching glob patterns
@@ -73,7 +73,7 @@ class TableDiscovery:
     def discover(self) -> List[DiscoveredTable]:
         """
         Discover all tables matching the configured criteria.
-        
+
         Returns tables sorted by priority (lower = more important).
         """
         tables = []
@@ -257,7 +257,7 @@ class TableDiscovery:
     def _has_primary_key(self, columns: List[ColumnInfo]) -> bool:
         """
         Check if table has a primary key or unique identifier column.
-        
+
         Looks for:
         - Columns with primary key constraint
         - Columns named 'id', 'pk', or ending with '_id'

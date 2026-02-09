@@ -188,7 +188,7 @@ class MetricsAggregator:
             )
 
             union_parts.append(f"""
-                SELECT 
+                SELECT
                     {columns_sql},
                     '{table.full_name}' as source_table_name,
                     '{owner}' as owner,
@@ -200,7 +200,7 @@ class MetricsAggregator:
         if not union_parts:
             return f"""
             CREATE OR REPLACE {view_type} {output_view} AS
-            SELECT 
+            SELECT
                 CAST(NULL AS TIMESTAMP) as window_start,
                 CAST(NULL AS TIMESTAMP) as window_end,
                 CAST(NULL AS STRING) as column_name,
@@ -245,7 +245,7 @@ class MetricsAggregator:
             )
 
             union_parts.append(f"""
-                SELECT 
+                SELECT
                     {columns_sql},
                     '{table.full_name}' as source_table_name,
                     '{owner}' as owner,
@@ -257,7 +257,7 @@ class MetricsAggregator:
         if not union_parts:
             return f"""
             CREATE OR REPLACE {view_type} {output_view} AS
-            SELECT 
+            SELECT
                 CAST(NULL AS TIMESTAMP) as window_start,
                 CAST(NULL AS TIMESTAMP) as window_end,
                 CAST(NULL AS STRING) as column_name,
@@ -330,7 +330,7 @@ class MetricsAggregator:
             SQL query for top drifters across all monitored tables.
         """
         return f"""
-        SELECT 
+        SELECT
             source_table_name,
             department,
             owner,
@@ -356,7 +356,7 @@ class MetricsAggregator:
             SQL query for feature-level drift details.
         """
         return f"""
-        SELECT 
+        SELECT
             column_name,
             window_start,
             window_end,
@@ -380,7 +380,7 @@ class MetricsAggregator:
             SQL query for data quality metrics summary.
         """
         return f"""
-        SELECT 
+        SELECT
             source_table_name,
             department,
             owner,

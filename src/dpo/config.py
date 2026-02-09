@@ -1,10 +1,19 @@
 """Configuration models for DPO."""
 
 import logging
-from typing import Any, Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
+ALLOWED_GRANULARITIES = {
+    "5 minutes",
+    "30 minutes",
+    "1 hour",
+    "1 day",
+    "1 week",
+    "1 month",
+}
 
 
 class DiscoveryConfig(BaseModel):
@@ -115,6 +124,19 @@ class MonitoredTableConfig(BaseModel):
         None, description="Column containing model version/ID"
     )
 
+    @field_validator("granularity")
+    @classmethod
+    def validate_granularity(cls, v: Optional[str]) -> Optional[str]:
+        """Validate optional per-table granularity values."""
+        if v is None:
+            return v
+        if v not in ALLOWED_GRANULARITIES:
+            allowed = ", ".join(sorted(ALLOWED_GRANULARITIES))
+            raise ValueError(
+                f"Unsupported granularity '{v}'. Allowed values: {allowed}"
+            )
+        return v
+
 
 class ProfileConfig(BaseModel):
     """The master template for a Data Profiling monitor with SDK-style names."""
@@ -157,6 +179,17 @@ class ProfileConfig(BaseModel):
     custom_metrics: List[CustomMetricConfig] = Field(
         default=[], description="Custom metrics to compute"
     )
+
+    @field_validator("granularity")
+    @classmethod
+    def validate_granularity(cls, v: str) -> str:
+        """Validate default granularity value."""
+        if v not in ALLOWED_GRANULARITIES:
+            allowed = ", ".join(sorted(ALLOWED_GRANULARITIES))
+            raise ValueError(
+                f"Unsupported granularity '{v}'. Allowed values: {allowed}"
+            )
+        return v
 
 
 class OrchestratorConfig(BaseModel):
@@ -226,6 +259,15 @@ class OrchestratorConfig(BaseModel):
             raise ValueError(
                 "timeseries_timestamp_column required when profile_type is TIMESERIES"
             )
+        if v.profile_type == "INFERENCE":
+            if v.prediction_column is None:
+                raise ValueError(
+                    "prediction_column required when profile_type is INFERENCE"
+                )
+            if v.timestamp_column is None:
+                raise ValueError(
+                    "timestamp_column required when profile_type is INFERENCE"
+                )
         return v
 
     @model_validator(mode="after")

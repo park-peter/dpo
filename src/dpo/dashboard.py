@@ -10,6 +10,7 @@ import logging
 from typing import Dict, List, Optional, Set, Tuple
 
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.dashboards import Dashboard
 
 from dpo.config import OrchestratorConfig
 
@@ -188,7 +189,7 @@ GLOBAL_HEALTH_DASHBOARD_TEMPLATE = {
 class DashboardProvisioner:
     """
     Provisions Lakeview dashboards for model monitoring.
-    
+
     Features:
     - Global health dashboard template
     - "Wall of Shame" top drifters view
@@ -209,12 +210,12 @@ class DashboardProvisioner:
     ) -> str:
         """
         Deploy Lakeview dashboard pointing to the unified view.
-        
+
         Args:
             unified_view: Full name of unified drift metrics view
             parent_path: Workspace path for dashboard (e.g., "/Workspace/Shared/DPO")
             dashboard_name: Optional custom dashboard name
-            
+
         Returns:
             Dashboard ID
         """
@@ -239,14 +240,18 @@ class DashboardProvisioner:
                 logger.info(f"Updating existing dashboard: {existing.dashboard_id}")
                 dashboard = self.w.lakeview.update(
                     dashboard_id=existing.dashboard_id,
-                    display_name=name,
-                    serialized_dashboard=json.dumps(template),
+                    dashboard=Dashboard(
+                        display_name=name,
+                        serialized_dashboard=json.dumps(template),
+                    ),
                 )
             else:
                 dashboard = self.w.lakeview.create(
-                    display_name=name,
-                    parent_path=parent_path,
-                    serialized_dashboard=json.dumps(template),
+                    dashboard=Dashboard(
+                        display_name=name,
+                        parent_path=parent_path,
+                        serialized_dashboard=json.dumps(template),
+                    ),
                 )
 
             dashboard_id = dashboard.dashboard_id

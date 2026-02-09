@@ -6,23 +6,28 @@ Automate Databricks Data Profiling at scale across Unity Catalog.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from dpo.config import load_config, OrchestratorConfig
-from dpo.discovery import TableDiscovery, DiscoveredTable
+from dpo.aggregator import MetricsAggregator
+from dpo.alerting import AlertProvisioner
+from dpo.config import OrchestratorConfig, load_config
+from dpo.dashboard import DashboardProvisioner
+from dpo.discovery import DiscoveredTable, TableDiscovery
 from dpo.provisioning import (
+    MonitorStatus,
     ProfileProvisioner,
     ProvisioningResult,
     RefreshResult,
-    MonitorStatus,
     get_monitor_statuses,
-    wait_for_monitors,
     print_monitor_statuses,
+    wait_for_monitors,
 )
-from dpo.aggregator import MetricsAggregator
-from dpo.alerting import AlertProvisioner
-from dpo.dashboard import DashboardProvisioner
-from dpo.utils import verify_output_schema_permissions, hash_config, sanitize_sql_identifier
+from dpo.utils import (
+    hash_config,
+    sanitize_sql_identifier,
+    verify_output_schema_permissions,
+    verify_view_permissions,
+)
 
 __version__ = "0.1.0"
 
@@ -44,6 +49,7 @@ __all__ = [
     "AlertProvisioner",
     "DashboardProvisioner",
     "verify_output_schema_permissions",
+    "verify_view_permissions",
     "hash_config",
     "sanitize_sql_identifier",
     "run_orchestration",
@@ -143,6 +149,19 @@ def _build_table_list(w, config: OrchestratorConfig) -> List[DiscoveredTable]:
     return tables
 
 
+def _successful_tables(
+    tables: List[DiscoveredTable], results: List[ProvisioningResult]
+) -> List[DiscoveredTable]:
+    """Return tables with monitors that exist and are usable downstream."""
+    success_actions = {"created", "updated", "no_change"}
+    table_map = {t.full_name: t for t in tables}
+    return [
+        table_map[r.table_name]
+        for r in results
+        if r.action in success_actions and r.table_name in table_map
+    ]
+
+
 def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
     """Simplified mode: Provision monitors only.
 
@@ -179,15 +198,19 @@ def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
     else:
         results = provisioner.provision_all(tables)
 
+    healthy_tables = _successful_tables(tables, results)
+
     # 4. Wait for monitors to become ACTIVE
     monitor_statuses = []
-    if config.wait_for_monitors and not config.dry_run:
+    if config.wait_for_monitors and not config.dry_run and healthy_tables:
         monitor_statuses = wait_for_monitors(
             w,
-            tables,
+            healthy_tables,
             timeout_seconds=config.wait_timeout_seconds,
             poll_interval=config.wait_poll_interval,
         )
+    elif config.wait_for_monitors and not config.dry_run:
+        logger.warning("No successfully provisioned monitors; skipping status wait")
 
     # 5. Orphan cleanup
     orphans = []
@@ -230,13 +253,21 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
     catalog = config.catalog_name
     output_schema = f"{catalog}.global_monitoring"
 
-    # 1. Pre-flight permission check (includes VIEW check for full mode)
+    # 1. Pre-flight permission checks
+    # Output schema: monitor metric tables
     verify_output_schema_permissions(
         w=w,
         catalog=catalog,
         schema=config.profile_defaults.output_schema_name,
         warehouse_id=config.warehouse_id,
-        mode="full",
+        mode="bulk_provision_only",
+    )
+    # Global schema: unified views for full mode
+    verify_view_permissions(
+        w=w,
+        catalog=catalog,
+        schema="global_monitoring",
+        warehouse_id=config.warehouse_id,
     )
 
     # 2. Build table list (handles both discovery and monitored_tables)
@@ -250,15 +281,19 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
     else:
         results = provisioner.provision_all(tables)
 
+    healthy_tables = _successful_tables(tables, results)
+
     # 4. Wait for monitors to become ACTIVE
     monitor_statuses = []
-    if config.wait_for_monitors and not config.dry_run:
+    if config.wait_for_monitors and not config.dry_run and healthy_tables:
         monitor_statuses = wait_for_monitors(
             w,
-            tables,
+            healthy_tables,
             timeout_seconds=config.wait_timeout_seconds,
             poll_interval=config.wait_poll_interval,
         )
+    elif config.wait_for_monitors and not config.dry_run:
+        logger.warning("No successfully provisioned monitors; skipping status wait")
 
     # 5. Orphan cleanup
     orphans = []
@@ -269,9 +304,9 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
     aggregator = MetricsAggregator(w, config)
     views_by_group = {}
 
-    if not config.dry_run:
+    if not config.dry_run and healthy_tables:
         views_by_group = aggregator.create_unified_views_by_group(
-            tables,
+            healthy_tables,
             output_schema,
             config.monitor_group_tag,
         )
@@ -281,6 +316,8 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
             sanitize_sql_identifier(g) for g in views_by_group.keys()
         }
         aggregator.cleanup_stale_views(output_schema, active_sanitized_groups)
+    elif not config.dry_run:
+        logger.warning("No healthy tables available; skipping aggregation/alerting/dashboard steps")
 
     # 7. Alerting - per group
     alerts_by_group = {}

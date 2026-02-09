@@ -66,20 +66,21 @@ def sanitize_sql_identifier(
 def hash_config(config_dict: Dict[str, Any]) -> str:
     """
     Generate deterministic hash of config for change detection.
-    
+
     Only hashes fields we control (ignores system fields like monitor_id, created_at).
     """
     controlled_fields = {
+        "profile_type",
         "output_schema_name",
         "granularity",
         "problem_type",
-        "prediction_col",
-        "label_col",
-        "timestamp_col",
-        "slicing_columns",
-        "inference_log",
+        "prediction_column",
+        "label_column",
+        "timestamp_column",
+        "model_id_column",
         "slicing_exprs",
-        "notifications",
+        "baseline_table_name",
+        "custom_metrics",
     }
 
     filtered = {k: v for k, v in config_dict.items() if k in controlled_fields}
@@ -92,7 +93,7 @@ def hash_config(config_dict: Dict[str, Any]) -> str:
 def calculate_config_diff(existing_config: Dict[str, Any], desired_config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Compare only user-controllable fields, ignoring system fields.
-    
+
     Returns dict of differences: {field: (existing_value, desired_value)}
     """
     ignore_fields = {
@@ -215,6 +216,60 @@ def verify_output_schema_permissions(
         raise
 
 
+def verify_view_permissions(
+    w: WorkspaceClient,
+    catalog: str,
+    schema: str,
+    warehouse_id: str,
+) -> None:
+    """Pre-flight check: verify CREATE VIEW permissions in a schema."""
+    test_view = f"{catalog}.{schema}._dpo_view_check_{int(time.time())}"
+
+    logger.info("Verifying CREATE VIEW permissions on %s.%s", catalog, schema)
+
+    try:
+        try:
+            w.schemas.get(full_name=f"{catalog}.{schema}")
+        except Exception:
+            logger.info("Creating schema %s.%s", catalog, schema)
+            w.schemas.create(name=schema, catalog_name=catalog)
+
+        result = w.statement_execution.execute_statement(
+            warehouse_id=warehouse_id,
+            statement=f"CREATE VIEW {test_view} AS SELECT 1 as test_col",
+            wait_timeout="30s",
+        )
+
+        if result.status and result.status.state.value == "FAILED":
+            raise PermissionError(f"Failed to create test view: {result.status.error}")
+
+        w.statement_execution.execute_statement(
+            warehouse_id=warehouse_id,
+            statement=f"DROP VIEW IF EXISTS {test_view}",
+            wait_timeout="30s",
+        )
+
+        logger.info(
+            "Pre-flight check passed: CREATE VIEW permissions verified on %s.%s",
+            catalog,
+            schema,
+        )
+    except PermissionError:
+        raise
+    except Exception as e:
+        error_msg = str(e).lower()
+        if any(
+            term in error_msg
+            for term in ["permission", "denied", "unauthorized", "access"]
+        ):
+            raise PermissionError(
+                f"FATAL: Cannot create views in '{catalog}.{schema}'. "
+                f"Grant CREATE VIEW permission before running full mode. "
+                f"Original error: {e}"
+            )
+        raise
+
+
 def create_retry_wrapper(
     max_attempts: int = 5,
     min_wait: int = 2,
@@ -222,7 +277,7 @@ def create_retry_wrapper(
 ) -> Callable:
     """
     Create a retry decorator with exponential backoff.
-    
+
     Handles HTTP 429 (Too Many Requests) and transient errors.
     """
 
@@ -244,7 +299,7 @@ def create_retry_wrapper(
 def api_call_with_retry(func: Callable, *args, **kwargs) -> Any:
     """
     Execute an API call with retry logic for rate limiting.
-    
+
     Handles HTTP 429 errors with exponential backoff.
     """
 
