@@ -4,13 +4,13 @@ import pytest
 from pydantic import ValidationError
 
 from dpo.config import (
-    load_config,
-    OrchestratorConfig,
-    DiscoveryConfig,
-    ProfileConfig,
     AlertConfig,
-    MonitoredTableConfig,
     CustomMetricConfig,
+    DiscoveryConfig,
+    MonitoredTableConfig,
+    OrchestratorConfig,
+    ProfileConfig,
+    load_config,
 )
 
 
@@ -30,14 +30,15 @@ profile_defaults:
   profile_type: "INFERENCE"
   output_schema_name: "monitoring"
   prediction_column: "pred"
+  timestamp_column: "ts"
 alerting:
   drift_threshold: 0.2
 """
         config_file = tmp_path / "test_config.yaml"
         config_file.write_text(config_content)
-        
+
         config = load_config(str(config_file))
-        
+
         assert config.warehouse_id == "test_warehouse"
         assert config.catalog_name == "prod"
         assert config.profile_defaults.profile_type == "INFERENCE"
@@ -51,8 +52,27 @@ alerting:
         """Test loading invalid YAML raises ValidationError."""
         config_file = tmp_path / "invalid.yaml"
         config_file.write_text("invalid: yaml: content:")
-        
+
         with pytest.raises(Exception):
+            load_config(str(config_file))
+
+    def test_load_validation_error(self, tmp_path):
+        """Test valid YAML with invalid config schema raises ValidationError."""
+        config_content = """
+catalog_name: "prod"
+warehouse_id: "test_warehouse"
+include_tagged_tables: false
+monitored_tables:
+  prod.ml.predictions: {}
+profile_defaults:
+  profile_type: "INFERENCE"
+  output_schema_name: "monitoring"
+  prediction_column: "pred"
+"""
+        config_file = tmp_path / "invalid_config.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ValidationError):
             load_config(str(config_file))
 
 
@@ -62,7 +82,7 @@ class TestDiscoveryConfig:
     def test_default_values(self):
         """Test default values are applied."""
         config = DiscoveryConfig()
-        
+
         assert config.include_tags == {"monitor_enabled": "true"}
         assert "information_schema" in config.exclude_schemas
 
@@ -71,7 +91,7 @@ class TestDiscoveryConfig:
         config = DiscoveryConfig(
             include_tags={"env": "prod", "team": "ml"},
         )
-        
+
         assert config.include_tags["env"] == "prod"
         assert config.include_tags["team"] == "ml"
 
@@ -82,7 +102,7 @@ class TestMonitoredTableConfig:
     def test_default_values(self):
         """Test default values are None."""
         config = MonitoredTableConfig()
-        
+
         assert config.baseline_table_name is None
         assert config.label_column is None
         assert config.prediction_column is None
@@ -99,10 +119,20 @@ class TestMonitoredTableConfig:
             granularity="1 hour",
             slicing_exprs=["region", "segment"],
         )
-        
+
         assert config.baseline_table_name == "cat.sch.baseline"
         assert config.problem_type == "PROBLEM_TYPE_REGRESSION"
         assert len(config.slicing_exprs) == 2
+
+    def test_invalid_granularity(self):
+        """Test invalid per-table granularity raises validation error."""
+        with pytest.raises(ValidationError):
+            MonitoredTableConfig(granularity="2 days")
+
+    def test_none_granularity_is_allowed(self):
+        """Test explicit None granularity is accepted."""
+        config = MonitoredTableConfig(granularity=None)
+        assert config.granularity is None
 
 
 class TestProfileConfig:
@@ -115,8 +145,9 @@ class TestProfileConfig:
             output_schema_name="monitoring",
             problem_type="PROBLEM_TYPE_CLASSIFICATION",
             prediction_column="pred",
+            timestamp_column="ts",
         )
-        
+
         assert config.profile_type == "INFERENCE"
         assert config.problem_type == "PROBLEM_TYPE_CLASSIFICATION"
 
@@ -127,7 +158,7 @@ class TestProfileConfig:
             output_schema_name="monitoring",
             timeseries_timestamp_column="ts",
         )
-        
+
         assert config.profile_type == "TIMESERIES"
         assert config.timeseries_timestamp_column == "ts"
 
@@ -137,14 +168,25 @@ class TestProfileConfig:
             profile_type="SNAPSHOT",
             output_schema_name="monitoring",
         )
-        
+
         assert config.profile_type == "SNAPSHOT"
+
+    def test_invalid_granularity(self):
+        """Test invalid default granularity raises validation error."""
+        with pytest.raises(ValidationError):
+            ProfileConfig(
+                profile_type="SNAPSHOT",
+                output_schema_name="monitoring",
+                granularity="2 days",
+            )
 
     def test_custom_metrics(self):
         """Test custom metrics configuration."""
         config = ProfileConfig(
             profile_type="INFERENCE",
             output_schema_name="monitoring",
+            prediction_column="prediction",
+            timestamp_column="timestamp",
             custom_metrics=[
                 CustomMetricConfig(
                     name="test_metric",
@@ -155,7 +197,7 @@ class TestProfileConfig:
                 ),
             ],
         )
-        
+
         assert len(config.custom_metrics) == 1
         assert config.custom_metrics[0].name == "test_metric"
 
@@ -166,7 +208,7 @@ class TestAlertConfig:
     def test_default_values(self):
         """Test default alert configuration."""
         config = AlertConfig()
-        
+
         assert config.enable_aggregated_alerts is True
         assert config.drift_threshold == 0.2
         assert config.null_rate_threshold is None
@@ -179,7 +221,7 @@ class TestAlertConfig:
             row_count_min=500,
             distinct_count_min=10,
         )
-        
+
         assert config.drift_threshold == 0.3
         assert config.null_rate_threshold == 0.1
         assert config.row_count_min == 500
@@ -189,7 +231,7 @@ class TestAlertConfig:
         """Test drift threshold must be between 0 and 1."""
         with pytest.raises(ValidationError):
             AlertConfig(drift_threshold=1.5)
-        
+
         with pytest.raises(ValidationError):
             AlertConfig(drift_threshold=-0.1)
 
@@ -208,6 +250,8 @@ class TestOrchestratorConfig:
                 profile_defaults=ProfileConfig(
                     profile_type="INFERENCE",
                     output_schema_name="catalog.schema",  # Invalid!
+                    prediction_column="prediction",
+                    timestamp_column="timestamp",
                 ),
             )
 
@@ -226,6 +270,38 @@ class TestOrchestratorConfig:
                 ),
             )
 
+    def test_inference_requires_prediction_column(self):
+        """Test INFERENCE profile requires prediction_column."""
+        with pytest.raises(ValidationError):
+            OrchestratorConfig(
+                catalog_name="test",
+                warehouse_id="test",
+                include_tagged_tables=False,
+                monitored_tables={"test.sch.tbl": MonitoredTableConfig()},
+                profile_defaults=ProfileConfig(
+                    profile_type="INFERENCE",
+                    output_schema_name="monitoring",
+                    prediction_column=None,
+                    timestamp_column="timestamp",
+                ),
+            )
+
+    def test_inference_requires_timestamp_column(self):
+        """Test INFERENCE profile requires timestamp_column."""
+        with pytest.raises(ValidationError):
+            OrchestratorConfig(
+                catalog_name="test",
+                warehouse_id="test",
+                include_tagged_tables=False,
+                monitored_tables={"test.sch.tbl": MonitoredTableConfig()},
+                profile_defaults=ProfileConfig(
+                    profile_type="INFERENCE",
+                    output_schema_name="monitoring",
+                    prediction_column="prediction",
+                    timestamp_column=None,
+                ),
+            )
+
     def test_include_tagged_tables_requires_discovery(self):
         """Test include_tagged_tables=True requires discovery config."""
         with pytest.raises(ValidationError):
@@ -238,6 +314,8 @@ class TestOrchestratorConfig:
                 profile_defaults=ProfileConfig(
                     profile_type="INFERENCE",
                     output_schema_name="monitoring",
+                    prediction_column="prediction",
+                    timestamp_column="timestamp",
                 ),
             )
 
@@ -252,6 +330,8 @@ class TestOrchestratorConfig:
                 profile_defaults=ProfileConfig(
                     profile_type="INFERENCE",
                     output_schema_name="monitoring",
+                    prediction_column="prediction",
+                    timestamp_column="timestamp",
                 ),
             )
 
@@ -268,6 +348,8 @@ class TestOrchestratorConfig:
                 profile_defaults=ProfileConfig(
                     profile_type="INFERENCE",
                     output_schema_name="monitoring",
+                    prediction_column="prediction",
+                    timestamp_column="timestamp",
                 ),
             )
 
@@ -284,6 +366,8 @@ class TestOrchestratorConfig:
                 profile_defaults=ProfileConfig(
                     profile_type="INFERENCE",
                     output_schema_name="monitoring",
+                    prediction_column="prediction",
+                    timestamp_column="timestamp",
                 ),
             )
 
@@ -307,9 +391,11 @@ class TestOrchestratorConfig:
             profile_defaults=ProfileConfig(
                 profile_type="INFERENCE",
                 output_schema_name="monitoring",
+                prediction_column="prediction",
+                timestamp_column="timestamp",
             ),
         )
-        
+
         assert config.include_tagged_tables is True
         assert config.discovery is not None
 
@@ -326,7 +412,7 @@ class TestCustomMetricConfig:
             definition="SUM(revenue)",
             output_type="double",
         )
-        
+
         assert metric.metric_type == "aggregate"
         assert metric.definition == "SUM(revenue)"
 
@@ -339,7 +425,7 @@ class TestCustomMetricConfig:
             definition="{{null_count}} / {{count}}",
             output_type="double",
         )
-        
+
         assert metric.metric_type == "derived"
         assert "{{null_count}}" in metric.definition
 

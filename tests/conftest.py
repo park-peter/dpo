@@ -1,15 +1,16 @@
 """Shared test fixtures for DPO tests."""
 
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
 from dpo.config import (
-    OrchestratorConfig,
-    DiscoveryConfig,
-    ProfileConfig,
     AlertConfig,
-    MonitoredTableConfig,
     CustomMetricConfig,
+    DiscoveryConfig,
+    MonitoredTableConfig,
+    OrchestratorConfig,
+    ProfileConfig,
 )
 from dpo.discovery import DiscoveredTable
 
@@ -26,21 +27,21 @@ def create_mock_column(name: str, type_text: str) -> MagicMock:
 def mock_workspace_client():
     """Create a mock WorkspaceClient."""
     client = MagicMock()
-    
+
     # Mock current_user
     client.current_user.me.return_value = MagicMock(user_name="test_user@example.com")
-    
+
     # Mock statement_execution
     result = MagicMock()
     result.result.data_array = [[10]]
     result.status.state.value = "SUCCEEDED"
     client.statement_execution.execute_statement.return_value = result
-    
+
     # Mock data_quality
-    client.data_quality.list_monitors.return_value = []
+    client.data_quality.list_monitor.return_value = []
     client.data_quality.get_monitor.return_value = None
     client.data_quality.create_monitor.return_value = MagicMock(monitor_id="mon_123")
-    
+
     # Mock tables
     table_info = MagicMock()
     table_info.table_id = "table_123"
@@ -52,23 +53,25 @@ def mock_workspace_client():
         create_mock_column("region", "STRING"),
     ]
     client.tables.get.return_value = table_info
-    
+
     # Mock schemas
     schema_info = MagicMock()
     schema_info.schema_id = "schema_123"
     client.schemas.get.return_value = schema_info
-    
+
     # Mock warehouses
     warehouse = MagicMock()
     warehouse.enable_serverless_compute = True
     client.warehouses.list.return_value = [warehouse]
-    
-    # Mock queries and alerts
-    client.queries.list.return_value = []
-    client.queries.create.return_value = MagicMock(id="query_123")
-    client.alerts.list.return_value = []
-    client.alerts.create.return_value = MagicMock(id="alert_123")
-    
+
+    # Mock alerts_v2
+    client.alerts_v2.list_alerts.return_value = []
+    client.alerts_v2.create_alert.return_value = MagicMock(id="alert_123")
+    client.alerts_v2.update_alert.return_value = MagicMock(id="alert_123")
+
+    # Mock notification destinations
+    client.notification_destinations.list.return_value = []
+
     return client
 
 
@@ -129,6 +132,7 @@ def sample_bulk_config() -> OrchestratorConfig:
             profile_type="INFERENCE",
             output_schema_name="monitoring_results",
             prediction_column="prediction",
+            timestamp_column="timestamp",
         ),
         alerting=AlertConfig(enable_aggregated_alerts=False),
         deploy_aggregated_dashboard=False,
@@ -152,6 +156,7 @@ def sample_config_with_discovery() -> OrchestratorConfig:
             profile_type="INFERENCE",
             output_schema_name="monitoring_results",
             prediction_column="prediction",
+            timestamp_column="timestamp",
         ),
         alerting=AlertConfig(enable_aggregated_alerts=True),
     )
@@ -174,6 +179,7 @@ def sample_config_with_groups() -> OrchestratorConfig:
             profile_type="INFERENCE",
             output_schema_name="monitoring_results",
             prediction_column="prediction",
+            timestamp_column="timestamp",
         ),
         alerting=AlertConfig(
             enable_aggregated_alerts=True,
@@ -206,6 +212,7 @@ def sample_config_with_include_schemas() -> OrchestratorConfig:
             profile_type="INFERENCE",
             output_schema_name="monitoring_results",
             prediction_column="prediction",
+            timestamp_column="timestamp",
         ),
     )
 
@@ -261,7 +268,7 @@ def sample_discovered_table() -> DiscoveredTable:
         create_mock_column("region", "STRING"),
         create_mock_column("model_version", "STRING"),
     ]
-    
+
     return DiscoveredTable(
         full_name="test_catalog.test_schema.test_table",
         tags={
@@ -296,7 +303,7 @@ def sample_discovered_tables(sample_discovered_table) -> list:
 def sample_grouped_tables() -> list:
     """Create tables with different monitor_group tags."""
     columns = [create_mock_column("value", "DOUBLE")]
-    
+
     return [
         DiscoveredTable(
             full_name="test_catalog.ml.model_a",
