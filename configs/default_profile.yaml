@@ -182,7 +182,8 @@ alerting:
 # =============================================================================
 
 # Dry run mode: Preview changes without executing
-dry_run: false
+# Recommended: always run with dry_run: true first to review the Impact Report
+dry_run: true
 
 # Orphan cleanup: Delete monitors for tables no longer in monitored_tables or tagged
 cleanup_orphans: false
