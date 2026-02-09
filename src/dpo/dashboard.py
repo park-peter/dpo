@@ -17,10 +17,22 @@ from dpo.config import OrchestratorConfig
 logger = logging.getLogger(__name__)
 
 
-# Lakeview Dashboard JSON template for Global Health view
-GLOBAL_HEALTH_DASHBOARD_TEMPLATE = {
-    "displayName": "DPO Global Health Dashboard",
-    "pages": [
+def _build_dashboard_template(
+    drift_threshold: float,
+    warning_threshold: float,
+    null_rate_threshold: Optional[float],
+    row_count_min: Optional[int],
+) -> dict:
+    """Build the Lakeview dashboard JSON template with configurable thresholds.
+
+    Args:
+        drift_threshold: JS divergence threshold for CRITICAL alerts.
+        warning_threshold: JS divergence threshold for WARNING alerts.
+        null_rate_threshold: Null rate threshold for data quality panels.
+        row_count_min: Minimum row count threshold for data quality panels.
+    """
+    pages = [
+        # --- Page 1: Drift Overview ---
         {
             "name": "overview",
             "displayName": "Drift Overview",
@@ -34,8 +46,8 @@ GLOBAL_HEALTH_DASHBOARD_TEMPLATE = {
                                     "datasetName": "unified_drift",
                                     "fields": [
                                         {"name": "total_tables", "expression": "COUNT(DISTINCT `source_table_name`)"},
-                                        {"name": "critical_alerts", "expression": "COUNT(CASE WHEN `js_divergence` >= 0.2 THEN 1 END)"},
-                                        {"name": "warning_alerts", "expression": "COUNT(CASE WHEN `js_divergence` >= 0.1 AND `js_divergence` < 0.2 THEN 1 END)"},
+                                        {"name": "critical_alerts", "expression": f"COUNT(CASE WHEN `js_divergence` >= {drift_threshold} THEN 1 END)"},
+                                        {"name": "warning_alerts", "expression": f"COUNT(CASE WHEN `js_divergence` >= {warning_threshold} AND `js_divergence` < {drift_threshold} THEN 1 END)"},
                                     ],
                                     "disaggregated": False,
                                 }
@@ -144,9 +156,136 @@ GLOBAL_HEALTH_DASHBOARD_TEMPLATE = {
                 },
             ],
         },
+        # --- Page 2: Data Quality ---
+        {
+            "name": "data_quality",
+            "displayName": "Data Quality",
+            "layout": [
+                {
+                    "widget": {
+                        "name": "quality_summary",
+                        "queries": [
+                            {
+                                "query": {
+                                    "datasetName": "unified_profile",
+                                    "fields": [
+                                        {"name": "tables_profiled", "expression": "COUNT(DISTINCT `source_table_name`)"},
+                                        {"name": "high_null_columns", "expression": f"COUNT(CASE WHEN `null_rate` > {null_rate_threshold or 1.0} THEN 1 END)"},
+                                        {"name": "low_row_tables", "expression": f"COUNT(DISTINCT CASE WHEN `record_count` < {row_count_min or 0} THEN `source_table_name` END)"},
+                                    ],
+                                    "disaggregated": False,
+                                }
+                            }
+                        ],
+                        "spec": {
+                            "type": "counter",
+                            "encodings": {"value": {"fieldName": "tables_profiled", "displayName": "Tables Profiled"}},
+                        },
+                    },
+                    "position": {"x": 0, "y": 0, "width": 2, "height": 1},
+                },
+                {
+                    "widget": {
+                        "name": "null_rate_trend",
+                        "queries": [
+                            {
+                                "query": {
+                                    "datasetName": "unified_profile",
+                                    "fields": [
+                                        {"name": "window_end", "expression": "`window_end`"},
+                                        {"name": "avg_null_rate", "expression": "AVG(`null_rate`)"},
+                                        {"name": "max_null_rate", "expression": "MAX(`null_rate`)"},
+                                    ],
+                                    "disaggregated": False,
+                                }
+                            }
+                        ],
+                        "spec": {
+                            "type": "line",
+                            "encodings": {
+                                "x": {"fieldName": "window_end", "scale": {"type": "temporal"}},
+                                "y": {"fieldName": "avg_null_rate", "scale": {"type": "quantitative"}},
+                            },
+                        },
+                    },
+                    "position": {"x": 2, "y": 0, "width": 4, "height": 2},
+                },
+                {
+                    "widget": {
+                        "name": "row_count_by_table",
+                        "queries": [
+                            {
+                                "query": {
+                                    "datasetName": "unified_profile",
+                                    "fields": [
+                                        {"name": "source_table_name", "expression": "`source_table_name`"},
+                                        {"name": "latest_record_count", "expression": "MAX(`record_count`)"},
+                                        {"name": "latest_distinct_count", "expression": "MAX(`distinct_count`)"},
+                                    ],
+                                    "disaggregated": False,
+                                }
+                            }
+                        ],
+                        "spec": {
+                            "type": "bar",
+                            "encodings": {
+                                "x": {"fieldName": "source_table_name", "scale": {"type": "ordinal"}},
+                                "y": {"fieldName": "latest_record_count", "scale": {"type": "quantitative"}},
+                            },
+                        },
+                    },
+                    "position": {"x": 0, "y": 2, "width": 3, "height": 2},
+                },
+                {
+                    "widget": {
+                        "name": "null_rate_by_column",
+                        "queries": [
+                            {
+                                "query": {
+                                    "datasetName": "unified_profile",
+                                    "fields": [
+                                        {"name": "source_table_name", "expression": "`source_table_name`"},
+                                        {"name": "column_name", "expression": "`column_name`"},
+                                        {"name": "null_rate", "expression": "MAX(`null_rate`)"},
+                                    ],
+                                    "disaggregated": False,
+                                }
+                            }
+                        ],
+                        "spec": {"type": "heatmap", "title": "Null Rate by Column"},
+                    },
+                    "position": {"x": 3, "y": 2, "width": 3, "height": 2},
+                },
+                {
+                    "widget": {
+                        "name": "quality_details_table",
+                        "queries": [
+                            {
+                                "query": {
+                                    "datasetName": "unified_profile",
+                                    "fields": [
+                                        {"name": "window_end", "expression": "`window_end`"},
+                                        {"name": "source_table_name", "expression": "`source_table_name`"},
+                                        {"name": "column_name", "expression": "`column_name`"},
+                                        {"name": "null_rate", "expression": "`null_rate`"},
+                                        {"name": "record_count", "expression": "`record_count`"},
+                                        {"name": "distinct_count", "expression": "`distinct_count`"},
+                                        {"name": "owner", "expression": "`owner`"},
+                                    ],
+                                    "disaggregated": True,
+                                }
+                            }
+                        ],
+                        "spec": {"type": "table"},
+                    },
+                    "position": {"x": 0, "y": 4, "width": 6, "height": 3},
+                },
+            ],
+        },
+        # --- Page 3: Detailed Drift Analysis ---
         {
             "name": "details",
-            "displayName": "Detailed Analysis",
+            "displayName": "Detailed Drift Analysis",
             "layout": [
                 {
                     "widget": {
@@ -175,15 +314,24 @@ GLOBAL_HEALTH_DASHBOARD_TEMPLATE = {
                 }
             ],
         },
-    ],
-    "datasets": [
-        {
-            "name": "unified_drift",
-            "displayName": "Unified Drift Metrics",
-            "query": "SELECT * FROM {unified_view}",
-        }
-    ],
-}
+    ]
+
+    return {
+        "displayName": "DPO Global Health Dashboard",
+        "pages": pages,
+        "datasets": [
+            {
+                "name": "unified_drift",
+                "displayName": "Unified Drift Metrics",
+                "query": "SELECT * FROM {unified_drift_view}",
+            },
+            {
+                "name": "unified_profile",
+                "displayName": "Unified Profile Metrics",
+                "query": "SELECT * FROM {unified_profile_view}",
+            },
+        ],
+    }
 
 
 class DashboardProvisioner:
@@ -195,6 +343,7 @@ class DashboardProvisioner:
     - "Wall of Shame" top drifters view
     - Department breakdown
     - Feature drift heatmap
+    - Data quality panels (null rates, row counts, cardinality)
     """
 
     def __init__(self, workspace_client: WorkspaceClient, config: OrchestratorConfig):
@@ -204,16 +353,18 @@ class DashboardProvisioner:
 
     def deploy_dashboard(
         self,
-        unified_view: str,
+        unified_drift_view: str,
         parent_path: str,
+        unified_profile_view: Optional[str] = None,
         dashboard_name: Optional[str] = None,
     ) -> str:
         """
-        Deploy Lakeview dashboard pointing to the unified view.
+        Deploy Lakeview dashboard pointing to the unified views.
 
         Args:
-            unified_view: Full name of unified drift metrics view
+            unified_drift_view: Full name of unified drift metrics view
             parent_path: Workspace path for dashboard (e.g., "/Workspace/Shared/DPO")
+            unified_profile_view: Full name of unified profile metrics view
             dashboard_name: Optional custom dashboard name
 
         Returns:
@@ -221,19 +372,30 @@ class DashboardProvisioner:
         """
         name = dashboard_name or f"DPO Global Health - {self.catalog}"
 
-        # Prepare template with actual view name
-        template = json.loads(json.dumps(GLOBAL_HEALTH_DASHBOARD_TEMPLATE))
+        threshold = self.config.alerting.drift_threshold
+        warning_threshold = max(0.1, threshold / 2)
+
+        template = _build_dashboard_template(
+            drift_threshold=threshold,
+            warning_threshold=warning_threshold,
+            null_rate_threshold=self.config.alerting.null_rate_threshold,
+            row_count_min=self.config.alerting.row_count_min,
+        )
         template["displayName"] = name
 
-        # Update dataset query with actual view
+        # Inject actual view names into dataset queries
+        profile_view = unified_profile_view or unified_drift_view.replace(
+            "_drift", "_profile"
+        )
         for dataset in template.get("datasets", []):
             if dataset.get("name") == "unified_drift":
-                dataset["query"] = f"SELECT * FROM {unified_view}"
+                dataset["query"] = f"SELECT * FROM {unified_drift_view}"
+            elif dataset.get("name") == "unified_profile":
+                dataset["query"] = f"SELECT * FROM {profile_view}"
 
         logger.info(f"Deploying dashboard: {name} to {parent_path}")
 
         try:
-            # Check for existing dashboard with same name
             existing = self._find_existing_dashboard(name, parent_path)
 
             if existing:
@@ -296,10 +458,11 @@ class DashboardProvisioner:
             Dict mapping group_name -> dashboard_id
         """
         results = {}
-        for group_name, (drift_view, _) in views_by_group.items():
+        for group_name, (drift_view, profile_view) in views_by_group.items():
             dashboard_id = self.deploy_dashboard(
                 drift_view,
                 parent_path,
+                unified_profile_view=profile_view,
                 dashboard_name=f"DPO Health - {group_name}",
             )
             results[group_name] = dashboard_id
@@ -327,17 +490,14 @@ class DashboardProvisioner:
         dpo_prefix = "DPO Health - "
 
         try:
-            # List all dashboards in the parent path
             dashboards = self.w.lakeview.list(path=parent_path)
 
             for dashboard in dashboards:
                 name = dashboard.display_name or ""
 
-                # Check if it's a DPO dashboard
                 if name.startswith(dpo_prefix):
                     group_name = name[len(dpo_prefix) :]
 
-                    # If group is not in active groups, delete
                     if group_name not in active_group_names:
                         try:
                             self.w.lakeview.trash(dashboard.dashboard_id)

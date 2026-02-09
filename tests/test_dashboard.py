@@ -1,7 +1,7 @@
 """Tests for DPO dashboard provisioning module."""
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -29,7 +29,7 @@ class TestDashboardProvisioner:
 
         provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
         dashboard_id = provisioner.deploy_dashboard(
-            unified_view="test_catalog.global_monitoring.unified_drift_metrics",
+            unified_drift_view="test_catalog.global_monitoring.unified_drift_metrics",
             parent_path="/Workspace/Shared/DPO",
         )
 
@@ -43,8 +43,13 @@ class TestDashboardProvisioner:
         serialized = json.loads(dashboard_payload.serialized_dashboard)
         assert dashboard_payload.parent_path == "/Workspace/Shared/DPO"
         assert serialized["displayName"] == "DPO Global Health - test_catalog"
+
+        # Drift and profile datasets are both present
+        ds_by_name = {ds["name"]: ds for ds in serialized["datasets"]}
+        assert "unified_drift" in ds_by_name
+        assert "unified_profile" in ds_by_name
         assert (
-            serialized["datasets"][0]["query"]
+            ds_by_name["unified_drift"]["query"]
             == "SELECT * FROM test_catalog.global_monitoring.unified_drift_metrics"
         )
 
@@ -62,13 +67,42 @@ class TestDashboardProvisioner:
 
         provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
         dashboard_id = provisioner.deploy_dashboard(
-            unified_view="test_catalog.global_monitoring.unified_drift_metrics",
+            unified_drift_view="test_catalog.global_monitoring.unified_drift_metrics",
             parent_path="/Workspace/Shared/DPO",
         )
 
         assert dashboard_id == "dash_existing"
         mock_workspace_client.lakeview.update.assert_called_once()
         mock_workspace_client.lakeview.create.assert_not_called()
+
+    def test_deploy_dashboard_uses_configured_thresholds(
+        self, mock_workspace_client, sample_config
+    ):
+        """Dashboard counters should use config-driven drift/warning thresholds."""
+        sample_config.alerting.drift_threshold = 0.4
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(
+            dashboard_id="dash_123"
+        )
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+
+        provisioner.deploy_dashboard(
+            unified_drift_view="test_catalog.global_monitoring.unified_drift_metrics",
+            parent_path="/Workspace/Shared/DPO",
+        )
+
+        dashboard_payload = mock_workspace_client.lakeview.create.call_args.kwargs[
+            "dashboard"
+        ]
+        serialized = json.loads(dashboard_payload.serialized_dashboard)
+        overview_page = serialized["pages"][0]
+        summary_widget = overview_page["layout"][0]["widget"]
+        fields = summary_widget["queries"][0]["query"]["fields"]
+        fields_by_name = {field["name"]: field["expression"] for field in fields}
+
+        assert ">= 0.4" in fields_by_name["critical_alerts"]
+        assert ">= 0.2" in fields_by_name["warning_alerts"]
+        assert "< 0.4" in fields_by_name["warning_alerts"]
 
     def test_deploy_dashboard_raises_when_create_fails(
         self, mock_workspace_client, sample_config
@@ -80,7 +114,7 @@ class TestDashboardProvisioner:
 
         with pytest.raises(RuntimeError, match="create failed"):
             provisioner.deploy_dashboard(
-                unified_view="test_catalog.global_monitoring.unified_drift_metrics",
+                unified_drift_view="test_catalog.global_monitoring.unified_drift_metrics",
                 parent_path="/Workspace/Shared/DPO",
             )
 
@@ -132,6 +166,22 @@ class TestDashboardProvisioner:
 
         assert results == {"ml_team": "dash_ml", "default": "dash_default"}
         assert provisioner.deploy_dashboard.call_count == 2
+        provisioner.deploy_dashboard.assert_has_calls(
+            [
+                call(
+                    "cat.sch.drift_ml",
+                    "/Workspace/Shared/DPO",
+                    unified_profile_view="cat.sch.profile_ml",
+                    dashboard_name="DPO Health - ml_team",
+                ),
+                call(
+                    "cat.sch.drift_default",
+                    "/Workspace/Shared/DPO",
+                    unified_profile_view="cat.sch.profile_default",
+                    dashboard_name="DPO Health - default",
+                ),
+            ]
+        )
 
     def test_cleanup_stale_dashboards_deletes_inactive_groups(
         self, mock_workspace_client, sample_config
