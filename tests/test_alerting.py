@@ -71,6 +71,24 @@ class TestDriftAlert:
         mock_workspace_client.alerts_v2.update_alert.assert_called_once()
         mock_workspace_client.alerts_v2.create_alert.assert_not_called()
 
+    def test_drift_alert_uses_configured_schedule_and_timezone(
+        self, mock_workspace_client, sample_config
+    ):
+        """Alert schedule should come from config, not hardcoded defaults."""
+        sample_config.alerting.alert_cron_schedule = "0 0 6 * * ?"
+        sample_config.alerting.alert_timezone = "America/Chicago"
+        alerter = AlertProvisioner(mock_workspace_client, sample_config)
+
+        alerter.create_unified_drift_alert(
+            "catalog.schema.unified_drift", "test_catalog"
+        )
+
+        call_args = mock_workspace_client.alerts_v2.create_alert.call_args
+        alert_v2 = call_args.kwargs.get("alert")
+
+        assert alert_v2.schedule.quartz_cron_schedule == "0 0 6 * * ?"
+        assert alert_v2.schedule.timezone_id == "America/Chicago"
+
 
 class TestDataQualityAlert:
     """Tests for data quality alert creation."""
@@ -236,6 +254,18 @@ class TestAlertStatusQuery:
         assert "max_drift" in query
         assert "GROUP BY" in query
         assert "HAVING" in query
+
+    def test_get_alert_status_query_uses_dynamic_warning_threshold(
+        self, mock_workspace_client, sample_config
+    ):
+        """Warning threshold should track configured drift threshold."""
+        sample_config.alerting.drift_threshold = 0.4
+        alerter = AlertProvisioner(mock_workspace_client, sample_config)
+
+        query = alerter.get_alert_status_query("catalog.schema.unified_drift")
+
+        assert "js_divergence >= 0.2" in query
+        assert "js_divergence < 0.4" in query
 
 
 class TestSubscriptionResolution:

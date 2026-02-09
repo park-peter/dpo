@@ -68,6 +68,14 @@ class AlertConfig(BaseModel):
         default={},
         description="Per-group notification routing. Key is group name, value is list of destinations.",
     )
+    alert_cron_schedule: str = Field(
+        "0 0 * * * ?",
+        description="Quartz cron expression for alert evaluation frequency (default: hourly)",
+    )
+    alert_timezone: str = Field(
+        "UTC",
+        description="Timezone for alert schedule evaluation",
+    )
 
 
 class CustomMetricConfig(BaseModel):

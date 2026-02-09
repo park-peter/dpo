@@ -1,5 +1,7 @@
 """Tests for DPO configuration module."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -74,6 +76,13 @@ profile_defaults:
 
         with pytest.raises(ValidationError):
             load_config(str(config_file))
+
+    def test_default_profile_yaml_uses_safe_dry_run_default(self):
+        """Repository starter config should default to dry_run=true."""
+        repo_root = Path(__file__).resolve().parents[1]
+        config = load_config(str(repo_root / "configs" / "default_profile.yaml"))
+
+        assert config.dry_run is True
 
 
 class TestDiscoveryConfig:
@@ -234,6 +243,23 @@ class TestAlertConfig:
 
         with pytest.raises(ValidationError):
             AlertConfig(drift_threshold=-0.1)
+
+    def test_alert_schedule_defaults(self):
+        """Alert schedule should default to hourly UTC."""
+        config = AlertConfig()
+
+        assert config.alert_cron_schedule == "0 0 * * * ?"
+        assert config.alert_timezone == "UTC"
+
+    def test_alert_schedule_custom_values(self):
+        """Custom schedule/timezone values should be accepted."""
+        config = AlertConfig(
+            alert_cron_schedule="0 0 6 * * ?",
+            alert_timezone="America/Chicago",
+        )
+
+        assert config.alert_cron_schedule == "0 0 6 * * ?"
+        assert config.alert_timezone == "America/Chicago"
 
 
 class TestOrchestratorConfig:

@@ -27,10 +27,6 @@ from dpo.config import OrchestratorConfig
 
 logger = logging.getLogger(__name__)
 
-# Default: run every hour at minute 0
-DEFAULT_CRON = "0 0 * * * ?"
-DEFAULT_TIMEZONE = "UTC"
-
 
 class AlertProvisioner:
     """Provisions SQL Alerts for drift detection and data quality.
@@ -377,8 +373,8 @@ class AlertProvisioner:
         )
 
         schedule = CronSchedule(
-            quartz_cron_schedule=DEFAULT_CRON,
-            timezone_id=DEFAULT_TIMEZONE,
+            quartz_cron_schedule=self.config.alerting.alert_cron_schedule,
+            timezone_id=self.config.alerting.alert_timezone,
             pause_status=SchedulePauseStatus.UNPAUSED,
         )
 
@@ -517,6 +513,7 @@ ORDER BY js_divergence DESC;
             SQL query for alert status summary.
         """
         threshold = self.config.alerting.drift_threshold
+        warning_threshold = max(0.1, threshold / 2)
 
         return f"""
         SELECT
@@ -524,7 +521,7 @@ ORDER BY js_divergence DESC;
             department,
             owner,
             COUNT(CASE WHEN js_divergence >= {threshold} THEN 1 END) as critical_count,
-            COUNT(CASE WHEN js_divergence >= 0.1 AND js_divergence < {threshold} THEN 1 END) as warning_count,
+            COUNT(CASE WHEN js_divergence >= {warning_threshold} AND js_divergence < {threshold} THEN 1 END) as warning_count,
             MAX(js_divergence) as max_drift,
             MAX(window_end) as last_check
         FROM {unified_view}

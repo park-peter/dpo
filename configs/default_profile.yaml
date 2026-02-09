@@ -177,6 +177,13 @@ alerting:
     # data_eng:
     #   - "data-eng@company.com"
 
+  # Alert evaluation schedule (Quartz cron format)
+  # Default: every hour at minute 0
+  alert_cron_schedule: "0 0 * * * ?"
+
+  # Timezone for alert schedule evaluation
+  alert_timezone: "UTC"
+
 # =============================================================================
 # Operational Settings
 # =============================================================================
