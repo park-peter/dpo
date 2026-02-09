@@ -22,7 +22,7 @@ pip install -e .
 
 For Databricks notebooks:
 ```python
-%pip install databricks-sdk>=0.68.0 pyyaml pydantic tenacity tabulate
+%pip install databricks-sdk>=0.77.0 pyyaml pydantic tenacity tabulate
 ```
 
 ## Quick Start
@@ -336,7 +336,7 @@ from dpo import (
 ## Requirements
 
 - Databricks workspace with Unity Catalog enabled
-- `databricks-sdk>=0.68.0` (uses `data_quality` API)
+- `databricks-sdk>=0.77.0` (uses `data_quality` API)
 - SQL Warehouse for statement execution
 - Appropriate permissions on target catalog/schema
 

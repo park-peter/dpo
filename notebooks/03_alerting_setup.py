@@ -15,7 +15,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-sdk>=0.68.0 pyyaml pydantic tenacity tabulate
+# MAGIC %pip install databricks-sdk>=0.77.0 pyyaml pydantic tenacity tabulate
 
 # COMMAND ----------
 

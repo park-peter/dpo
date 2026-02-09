@@ -7,26 +7,26 @@ name = "dpo"
 version = "0.1.0"
 description = "Data Profiling Orchestrator - Automate Databricks Data Profiling at scale"
 readme = "README.md"
-license = {text = "Apache-2.0"}
-requires-python = ">=3.9"
+license = {text = "GPL-3.0-only"}
+requires-python = ">=3.11"
 authors = [
     {name = "Databricks Solution Accelerators"}
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "databricks-sdk>=0.68.0",
+    "databricks-sdk>=0.77.0",
     "pyyaml>=6.0",
     "pydantic>=2.0",
     "tenacity>=8.0",
     "tabulate>=0.9.0",
+    "pytest-cov>=7.0.0",
 ]
 
 [project.optional-dependencies]
@@ -47,9 +47,11 @@ include = ["dpo*"]
 
 [tool.black]
 line-length = 120
-target-version = ['py39']
+target-version = ['py311', 'py312']
 
 [tool.ruff]
 line-length = 120
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
