@@ -27,6 +27,10 @@ class DiscoveredTable:
     columns: List[ColumnInfo] = field(default_factory=list)
     table_type: str = "UNKNOWN"
     priority: int = 99
+    # Enrichment metadata (resolved from config override > UC tag > default)
+    owner: Optional[str] = None
+    runbook_url: Optional[str] = None
+    lineage_url: Optional[str] = None
 
     @property
     def catalog(self) -> str:
@@ -39,6 +43,30 @@ class DiscoveredTable:
     @property
     def table_name(self) -> str:
         return self.full_name.split(".")[2]
+
+    def resolve_enrichment(self, table_config=None) -> None:
+        """Resolve enrichment metadata: config override > UC tag > default.
+
+        Args:
+            table_config: Optional MonitoredTableConfig with override values.
+        """
+        # Owner: config > UC tag 'owner' > 'unknown'
+        if table_config and table_config.owner:
+            self.owner = table_config.owner
+        elif not self.owner:
+            self.owner = self.tags.get("owner", "unknown")
+
+        # Runbook URL: config > UC tag 'runbook_url' > None
+        if table_config and table_config.runbook_url:
+            self.runbook_url = table_config.runbook_url
+        elif not self.runbook_url:
+            self.runbook_url = self.tags.get("runbook_url")
+
+        # Lineage URL: config > UC tag 'lineage_url' > None
+        if table_config and table_config.lineage_url:
+            self.lineage_url = table_config.lineage_url
+        elif not self.lineage_url:
+            self.lineage_url = self.tags.get("lineage_url")
 
 
 class TableDiscovery:

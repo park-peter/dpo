@@ -34,6 +34,36 @@ class DiscoveryConfig(BaseModel):
     )
 
 
+class PolicyConfig(BaseModel):
+    """Lightweight policy checks for config validation."""
+
+    naming_patterns: List[str] = Field(
+        default=[],
+        description="Regex patterns that table names must match (e.g., '^prod\\\\..*')",
+    )
+    required_tags: List[str] = Field(
+        default=[],
+        description="Tag keys that must be present on monitored tables (e.g., ['owner', 'department'])",
+    )
+    forbidden_patterns: List[str] = Field(
+        default=[],
+        description="Regex patterns that table names must NOT match (e.g., '.*_tmp$', '.*_test$')",
+    )
+    require_baseline: bool = Field(
+        False,
+        description="Require baseline_table_name for all inference monitors",
+    )
+    require_slicing: bool = Field(
+        False,
+        description="Require at least one slicing_expr per table",
+    )
+    max_tables_per_config: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Maximum number of tables allowed in a single config file",
+    )
+
+
 class AlertConfig(BaseModel):
     """Defaults for generated alerts."""
 
@@ -130,6 +160,23 @@ class MonitoredTableConfig(BaseModel):
     )
     model_id_column: Optional[str] = Field(
         None, description="Column containing model version/ID"
+    )
+    # Phase 2: Enrichment metadata
+    owner: Optional[str] = Field(
+        None, description="Table owner (overrides UC tag fallback)"
+    )
+    runbook_url: Optional[str] = Field(
+        None, description="Runbook URL for alert actionability"
+    )
+    lineage_url: Optional[str] = Field(
+        None, description="Lineage URL for data provenance context"
+    )
+    # Phase 2: Per-table drift threshold override
+    drift_threshold: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Per-table JS divergence threshold (overrides alerting.drift_threshold)",
     )
 
     @field_validator("granularity")
@@ -228,6 +275,10 @@ class OrchestratorConfig(BaseModel):
     )
     profile_defaults: ProfileConfig
     alerting: AlertConfig = Field(default_factory=AlertConfig)
+    policy: Optional[PolicyConfig] = Field(
+        None,
+        description="Policy checks applied during validation (naming, tags, forbidden patterns)",
+    )
     dry_run: bool = Field(False, description="Preview changes only")
     cleanup_orphans: bool = Field(
         False, description="Delete monitors for untagged tables"
@@ -247,6 +298,11 @@ class OrchestratorConfig(BaseModel):
     )
     wait_poll_interval: int = Field(
         20, description="Seconds between status checks when waiting"
+    )
+    stale_monitor_days: int = Field(
+        30,
+        ge=1,
+        description="Number of days without a refresh before a monitor is considered stale",
     )
 
     @field_validator("profile_defaults")
