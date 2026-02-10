@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-version = "0.1.0"
 name = "databricks-dpo"
+version = "0.2.0"
 description = "Data Profiling Orchestrator - Automate Databricks Data Profiling at scale"
 readme = "README.md"
 license = {text = "GPL-3.0-only"}
@@ -45,6 +45,7 @@ dpo = "dpo.cli:main"
 [project.urls]
 "Homepage" = "https://github.com/databricks/solution-accelerators"
 "Bug Tracker" = "https://github.com/databricks/solution-accelerators/issues"
+"Changelog" = "https://github.com/databricks/solution-accelerators/blob/main/DPO/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
