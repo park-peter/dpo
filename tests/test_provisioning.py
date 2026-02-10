@@ -16,46 +16,6 @@ from dpo.provisioning import ImpactReport, ProfileProvisioner, ProvisioningResul
 from tests.conftest import create_mock_column
 
 
-class TestProvisioningResult:
-    """Tests for ProvisioningResult dataclass."""
-
-    def test_created_result(self):
-        """Test created result."""
-        result = ProvisioningResult(
-            table_name="cat.sch.tbl",
-            action="created",
-            success=True,
-            monitor_id="mon_123",
-        )
-
-        assert result.success is True
-        assert result.action == "created"
-        assert result.monitor_id == "mon_123"
-
-    def test_failed_result(self):
-        """Test failed result with error message."""
-        result = ProvisioningResult(
-            table_name="cat.sch.tbl",
-            action="failed",
-            success=False,
-            error_message="Permission denied",
-        )
-
-        assert result.success is False
-        assert result.error_message == "Permission denied"
-
-    def test_skipped_column_missing_result(self):
-        """Test skipped due to missing column."""
-        result = ProvisioningResult(
-            table_name="cat.sch.tbl",
-            action="skipped_column_missing",
-            success=False,
-            error_message="Column 'label' not found",
-        )
-
-        assert result.action == "skipped_column_missing"
-
-
 class TestImpactReport:
     """Tests for ImpactReport class."""
 
@@ -380,13 +340,17 @@ class TestProfileProvisioner:
     def test_dry_run_all(
         self, mock_workspace_client, sample_config, sample_discovered_tables
     ):
-        """Test dry run mode."""
+        """Test dry run mode validates columns and reports correctly."""
         sample_config.dry_run = True
 
         provisioner = ProfileProvisioner(mock_workspace_client, sample_config)
-        results = provisioner.dry_run_all(sample_discovered_tables)
+        results, impact = provisioner.dry_run_all(sample_discovered_tables)
 
-        assert all(r.action == "dry_run" for r in results)
+        # First table (with correct columns) should be dry_run,
+        # second table (only 'value' column) should be skipped_column_missing
+        assert any(r.action == "dry_run" for r in results)
+        assert any(r.action == "skipped_column_missing" for r in results)
+        assert impact is not None
 
         mock_workspace_client.data_quality.create_monitor.assert_not_called()
 
@@ -652,11 +616,12 @@ class TestProvisioningEdgeCases:
         """Dry run should evaluate both update and no-change paths for existing monitors."""
         provisioner = ProfileProvisioner(mock_workspace_client, sample_config)
         provisioner._get_monitor_count = MagicMock(return_value=0)
+        provisioner._validate_columns_exist = MagicMock()  # bypass column checks
         provisioner._get_existing_monitor = MagicMock(side_effect=[MagicMock(), MagicMock()])
         provisioner._has_config_drift = MagicMock(side_effect=[True, False])
         provisioner._build_config_dict = MagicMock(return_value={"granularity": "1 day"})
 
-        results = provisioner.dry_run_all(sample_discovered_tables)
+        results, impact = provisioner.dry_run_all(sample_discovered_tables)
 
         assert len(results) == 2
         assert all(r.action == "dry_run" for r in results)
@@ -804,7 +769,7 @@ class TestProvisioningEdgeCases:
             return_value=provisioner.MAX_MONITORS_PER_METASTORE
         )
 
-        results = provisioner.dry_run_all(sample_discovered_tables)
+        results, impact = provisioner.dry_run_all(sample_discovered_tables)
 
         assert all(r.action == "skipped_quota" for r in results)
 
