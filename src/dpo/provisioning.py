@@ -62,10 +62,11 @@ class ProvisioningResult:
 
 
 class ImpactReport:
-    """Generates human-readable dry run impact reports."""
+    """Generates human-readable and structured dry run impact reports."""
 
     def __init__(self):
         self.planned_actions: List[dict] = []
+        self.validation_warnings: List[dict] = []
 
     def add(self, table: str, action: str, reason: str = ""):
         """Add a planned action to the report."""
@@ -75,6 +76,27 @@ class ImpactReport:
             "reason": reason,
         })
 
+    def add_warning(self, table: str, warning: str):
+        """Add a validation warning (column/slicing issues found during dry-run)."""
+        self.validation_warnings.append({"table": table, "warning": warning})
+
+    def to_dict(self) -> dict:
+        """Return structured dict for programmatic consumption."""
+        actions = [p["action"] for p in self.planned_actions]
+        return {
+            "summary": {
+                "create": actions.count("create"),
+                "update": actions.count("update"),
+                "no_change": actions.count("no_change"),
+                "skip_quota": actions.count("skip_quota"),
+                "skip_column_missing": actions.count("skip_column_missing"),
+                "skip_cardinality": actions.count("skip_cardinality"),
+                "total": len(self.planned_actions),
+            },
+            "actions": sorted(self.planned_actions, key=lambda p: p["table"]),
+            "warnings": sorted(self.validation_warnings, key=lambda w: w["table"]),
+        }
+
     def print_summary(self):
         """Print human-readable impact report."""
         actions = [p["action"] for p in self.planned_actions]
@@ -82,7 +104,7 @@ class ImpactReport:
             "New Monitors": actions.count("create"),
             "Updates": actions.count("update"),
             "Skipped (Quota)": actions.count("skip_quota"),
-            "Skipped (No PK)": actions.count("skip_no_pk"),
+            "Skipped (Column Missing)": actions.count("skip_column_missing"),
             "Skipped (High Cardinality)": actions.count("skip_cardinality"),
             "No Change": actions.count("no_change"),
         }
@@ -111,8 +133,16 @@ class ImpactReport:
         if len(self.planned_actions) > 20:
             print(f"\n... and {len(self.planned_actions) - 20} more tables")
 
+        if self.validation_warnings:
+            print("\nVALIDATION WARNINGS:")
+            print(tabulate(
+                [[w["table"].split(".")[-1], w["warning"]] for w in self.validation_warnings[:10]],
+                headers=["Table", "Warning"],
+                tablefmt="simple",
+            ))
+
         print("\n" + "=" * 60)
-        print("To execute, set dry_run: false in config")
+        print("To execute: dpo run <config_path> --confirm")
         print("=" * 60 + "\n")
 
 
@@ -291,14 +321,17 @@ class ProfileProvisioner:
 
     def dry_run_all(
         self, tables: List[DiscoveredTable]
-    ) -> List[ProvisioningResult]:
-        """Execute a dry run and print impact report.
+    ) -> tuple[List[ProvisioningResult], ImpactReport]:
+        """Execute a dry run with full column/slicing validation.
+
+        Mirrors real provisioning validations so the preview matches
+        actual apply outcomes.
 
         Args:
             tables: List of discovered tables to evaluate.
 
         Returns:
-            List of provisioning results showing planned actions.
+            Tuple of (results list, ImpactReport with structured data).
         """
         report = ImpactReport()
         results = []
@@ -316,6 +349,27 @@ class ProfileProvisioner:
                 ))
                 continue
 
+            # Mirror real provisioning: validate columns exist
+            try:
+                self._validate_columns_exist(table)
+            except ValueError as e:
+                report.add(table.full_name, "skip_column_missing", str(e))
+                report.add_warning(table.full_name, str(e))
+                results.append(ProvisioningResult(
+                    table_name=table.full_name,
+                    action="skipped_column_missing",
+                    success=False,
+                    error_message=str(e),
+                ))
+                continue
+
+            # Mirror real provisioning: validate slicing columns
+            candidate_slicing = self._resolve_setting(table, "slicing_exprs") or []
+            table_column_names = {col.name.lower() for col in table.columns}
+            for col_name in candidate_slicing:
+                if col_name.lower() not in table_column_names:
+                    report.add_warning(table.full_name, f"Slicing column '{col_name}' not found in table schema")
+
             existing = self._get_existing_monitor(table)
 
             if existing:
@@ -324,11 +378,7 @@ class ProfileProvisioner:
                 if self._has_config_drift(existing, table):
                     report.add(table.full_name, "update", "config drift detected")
                 else:
-                    report.add(
-                        table.full_name,
-                        "no_change",
-                        "monitor config already in sync",
-                    )
+                    report.add(table.full_name, "no_change", "monitor config already in sync")
                 results.append(ProvisioningResult(
                     table_name=table.full_name,
                     action="dry_run",
@@ -344,7 +394,7 @@ class ProfileProvisioner:
                 ))
 
         report.print_summary()
-        return results
+        return results, report
 
     @retry(
         stop=stop_after_attempt(5),
