@@ -1,0 +1,27 @@
+# Pre-commit configuration for DPO repository.
+#
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # Standard code quality hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+
+  # DPO config validation (local hook)
+  - repo: local
+    hooks:
+      - id: dpo-validate
+        name: DPO config validation
+        description: Validates all DPO config files in configs/
+        entry: >
+          bash -c 'for f in "$@"; do dpo validate "$f" || exit 1; done' --
+        language: system
+        files: "^configs/(?!policies/).*\\.ya?ml$"
+        pass_filenames: true
+        types: [yaml]

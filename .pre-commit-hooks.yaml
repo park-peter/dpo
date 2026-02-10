@@ -1,0 +1,20 @@
+# Shareable pre-commit hook definition for teams that vendor DPO hooks centrally.
+#
+# Usage in consuming repos:
+#   # .pre-commit-config.yaml
+#   repos:
+#     - repo: https://github.com/your-org/DPO
+#       rev: v0.2.0
+#       hooks:
+#         - id: dpo-validate
+#           args: ["configs/production.yaml"]
+
+- id: dpo-validate
+  name: DPO config validation
+  description: Validates DPO YAML configuration files against schema and policy rules.
+  entry: dpo validate
+  language: python
+  types: [yaml]
+  pass_filenames: false
+  additional_dependencies:
+    - "databricks-dpo"
