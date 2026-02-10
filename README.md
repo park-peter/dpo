@@ -5,29 +5,68 @@ A "Declare and Deploy" solution for automating Databricks Data Profiling at scal
 ## Overview
 
 DPO eliminates manual UI-based configuration by providing:
+- **CLI-First Workflow**: `dpo validate`, `dpo dry-run`, `dpo run`, `dpo coverage` via a `click`-based CLI
 - **Config-Driven Tables**: Define tables explicitly in YAML with per-table settings
 - **Optional Tag Discovery**: Discover additional tables via Unity Catalog tags
-- **Per-Table Configuration**: Baseline tables, label columns, granularity per table
+- **Per-Table Configuration**: Baseline tables, label columns, granularity, enrichment metadata per table
 - **All Profile Types**: Support for Snapshot, TimeSeries, and Inference profiles
 - **Two Operation Modes**: Full mode for unified observability, Bulk mode for quick onboarding
 - **Monitor Groups**: Per-team/department aggregation with separate views, alerts, and dashboards
 - **Schema Validation**: Pre-flight column existence checks before creating monitors
+- **Policy Governance**: Configurable naming rules, required tags, and structural constraints
+- **Coverage Governance**: Detect unmonitored tables, stale monitors, and orphaned monitors
+- **Enriched Alerting**: Alerts carry owner, runbook URL, and lineage URL for actionable triage
 - **Unified Metrics Views**: Single "Management Plane" aggregating all profile and drift metrics
 
 ## Installation
 
 ```bash
+pip install databricks-dpo
+```
+
+For local development:
+```bash
 pip install -e .
 ```
 
-For Databricks notebooks:
-```python
-%pip install databricks-sdk>=0.77.0 pyyaml pydantic tenacity tabulate
+Or from a git clone:
+```bash
+make install
 ```
+
+For Databricks notebooks (Python API execution path):
+```python
+%pip install databricks-dpo
+```
+
+## Execution Contexts
+
+- **Local shell / CI/CD runners**: use the `dpo` CLI (`validate`, `dry-run`, `run`, `coverage`).
+- **Databricks notebooks / notebook jobs**: use the Python API (`load_config`, `run_orchestration`).
+
+The notebook path is API-driven; running the CLI inside notebook cells is not the recommended operating model.
 
 ## Quick Start
 
-### Option 1: Config-Driven (Recommended)
+### Option 1: CLI (Local + CI/CD Recommended)
+
+The `dpo` CLI is safe by default - validate first, then preview, then execute:
+
+```bash
+# 1. Validate config syntax and policy rules
+dpo validate configs/my_config.yaml
+
+# 2. Preview what would change (no mutations)
+dpo dry-run configs/my_config.yaml
+
+# 3. Execute for real (requires explicit --confirm)
+dpo run configs/my_config.yaml --confirm
+
+# 4. Check governance coverage
+dpo coverage configs/my_config.yaml
+```
+
+### Option 2: Config-Driven (Python API for Notebooks/Jobs)
 
 Define tables explicitly in YAML - version-controlled and reproducible:
 
@@ -63,7 +102,7 @@ report = run_orchestration(config)
 print(f"Created {report.monitors_created} monitors")
 ```
 
-### Option 2: Tag-Based Discovery
+### Option 3: Tag-Based Discovery
 
 Discover tables via Unity Catalog tags:
 
@@ -89,7 +128,7 @@ profile_defaults:
 monitored_tables: {}  # Can be empty when using discovery
 ```
 
-### Option 3: Hybrid Mode
+### Option 4: Hybrid Mode
 
 Use both - YAML config takes precedence for tables that appear in both:
 
@@ -137,6 +176,10 @@ Available per-table settings (all optional, inherit from `profile_defaults`):
 | `problem_type` | CLASSIFICATION or REGRESSION |
 | `granularity` | Aggregation window ("1 hour", "1 day", etc.) |
 | `slicing_exprs` | Columns to slice metrics by |
+| `owner` | Table owner for alert routing (falls back to UC tag `owner`) |
+| `runbook_url` | Runbook URL included in alert payloads |
+| `lineage_url` | Lineage URL included in alert payloads |
+| `drift_threshold` | Per-table JS divergence threshold (overrides global `alerting.drift_threshold`) |
 
 ## Operation Modes
 
@@ -238,6 +281,65 @@ ValueError: Column 'label_v1' (from label_column) not found in table
 
 This prevents cryptic API errors and provides clear guidance.
 
+## CLI Reference
+
+DPO ships a `click`-based CLI installed as the `dpo` console script.
+Use this CLI from a local shell or CI/CD runner.
+For Databricks notebooks/jobs, use the Python API shown above.
+
+| Command | Description | Safe by Default |
+|---------|-------------|-----------------|
+| `dpo validate <config>` | Schema + policy validation (offline by default, `--check-workspace` for workspace checks) | Yes |
+| `dpo dry-run <config>` | Preview planned actions with a structured Impact Report | Yes |
+| `dpo run <config> --confirm` | Execute orchestration (requires explicit `--confirm` flag) | Yes |
+| `dpo coverage <config>` | Report unmonitored, stale, and orphaned monitors | Yes |
+
+All commands support `--verbose` for DEBUG logging and `--format json` for machine-readable output.
+
+`dpo dry-run` always enforces dry-run mode and `dpo run --confirm` always enforces live mode, regardless of the YAML `dry_run` value.
+
+**Exit codes:** `0` success, `1` validation failure, `2` usage error, `3` runtime error.
+
+## Policy Governance
+
+Define structural rules that all configurations must satisfy:
+
+```yaml
+# In your config or a standalone policy file
+policy:
+  naming_patterns:
+    - "^prod\\..*"                # Tables must be in prod catalog
+  required_tags:
+    - "owner"
+    - "team"
+  forbidden_patterns:
+    - ".*_tmp$"                   # No temporary tables
+    - ".*_test$"                  # No test tables
+  require_baseline: true          # All inference monitors need a baseline
+  require_slicing: true           # At least one slicing expression per table
+  max_tables_per_config: 500      # Limit config scope
+```
+
+Policy templates are available in `configs/policies/`:
+- `default_policy.yaml` - Permissive defaults
+- `strict_policy.yaml` - Production-grade constraints
+
+## Coverage Governance
+
+The `dpo coverage` command analyzes monitoring gaps:
+
+| Metric | Description |
+|--------|-------------|
+| **Unmonitored tables** | Tables in the catalog that have no profiling monitor |
+| **Stale monitors** | Monitors that haven't refreshed in `stale_monitor_days` (default 30) |
+| **Orphan monitors** | Monitors whose source tables no longer exist |
+
+```bash
+dpo coverage configs/production.yaml --format json
+```
+
+The Lakeview dashboard includes a dedicated **Coverage Governance** page backed by `CoverageAnalyzer` output from the latest orchestration run, including a snapshot timestamp plus unmonitored/stale/orphan monitor detail tables.
+
 ## Configuration Reference
 
 ### Top-Level Settings
@@ -250,6 +352,8 @@ This prevents cryptic API errors and provides clear guidance.
 | `include_tagged_tables` | No | If true, discover tables via UC tags (default: false) |
 | `monitored_tables` | Conditional | Required if `include_tagged_tables` is false |
 | `discovery` | Conditional | Required if `include_tagged_tables` is true |
+| `policy` | No | Policy governance rules (see Policy Governance section) |
+| `stale_monitor_days` | No | Days without refresh before a monitor is considered stale (default: 30) |
 
 ### Profile Defaults
 
@@ -273,6 +377,8 @@ This prevents cryptic API errors and provides clear guidance.
 | `drift_threshold` | JS divergence threshold (default: 0.2) |
 | `null_rate_threshold` | Alert if null rate exceeds threshold |
 | `row_count_min` | Alert if row count falls below |
+| `alert_cron_schedule` | Quartz cron schedule for alert evaluation (default hourly) |
+| `alert_timezone` | Timezone for alert schedule evaluation (default `UTC`) |
 | `default_notifications` | Default notification destinations |
 | `group_notifications` | Per-group notification routing |
 
@@ -283,15 +389,21 @@ DPO/
 ├── src/
 │   └── dpo/
 │       ├── __init__.py       # Main entry point + run_orchestration()
-│       ├── config.py         # Pydantic config models
-│       ├── discovery.py      # Phase 1: UC table discovery
-│       ├── provisioning.py   # Phase 2: Monitor lifecycle
-│       ├── aggregator.py     # Phase 3: Unified views (per group)
-│       ├── alerting.py       # Phase 4: SQL Alerts (per group)
-│       ├── dashboard.py      # Phase 5: Lakeview dashboard (per group)
+│       ├── __main__.py       # Module entry point (python -m dpo)
+│       ├── cli.py            # click-based CLI (dpo validate/dry-run/run/coverage)
+│       ├── config.py         # Pydantic config models (incl. PolicyConfig)
+│       ├── coverage.py       # Coverage governance (unmonitored/stale/orphan)
+│       ├── discovery.py      # UC table discovery + enrichment resolution
+│       ├── provisioning.py   # Monitor lifecycle + structured ImpactReport
+│       ├── aggregator.py     # Unified views with enrichment metadata
+│       ├── alerting.py       # SQL Alerts with owner/runbook/lineage
+│       ├── dashboard.py      # Lakeview dashboard + coverage page
 │       └── utils.py          # Shared utilities
 ├── configs/
-│   └── default_profile.yaml
+│   ├── default_profile.yaml
+│   └── policies/
+│       ├── default_policy.yaml
+│       └── strict_policy.yaml
 ├── notebooks/
 │   ├── 01_discovery_demo.py
 │   ├── 02_full_orchestration.py
@@ -312,6 +424,9 @@ from dpo import (
     run_bulk_provisioning,
     load_config,
     OrchestrationReport,
+    ImpactReport,
+    CoverageAnalyzer,
+    CoverageReport,
     get_monitor_statuses,
     wait_for_monitors,
     print_monitor_statuses,
@@ -332,11 +447,14 @@ from dpo import (
 | `unified_profile_views` | `Dict[str, str]` | Group → profile view name |
 | `drift_alert_ids` | `Dict[str, str]` | Group → drift alert ID |
 | `dashboard_ids` | `Dict[str, str]` | Group → dashboard ID |
+| `impact_report` | `Optional[ImpactReport]` | Structured dry-run impact report |
+| `coverage_report` | `Optional[CoverageReport]` | Coverage governance analysis |
 
 ## Requirements
 
 - Databricks workspace with Unity Catalog enabled
 - `databricks-sdk>=0.77.0` (uses `data_quality` API)
+- `click>=8.0` (CLI framework)
 - SQL Warehouse for statement execution
 - Appropriate permissions on target catalog/schema
 
