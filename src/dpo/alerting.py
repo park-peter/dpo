@@ -1,5 +1,4 @@
-"""
-Phase 4: Observability and Alerting
+"""Observability and Alerting.
 
 Provisions SQL Alerts for drift detection and data quality issues.
 Supports per-group notification routing via email or notification destination.

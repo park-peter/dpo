@@ -1,5 +1,4 @@
-"""
-Phase 1: Metadata-Driven Discovery Engine
+"""Metadata-Driven Discovery Engine.
 
 Crawls Unity Catalog to find tables tagged for monitoring.
 """

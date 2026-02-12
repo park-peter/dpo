@@ -1,5 +1,4 @@
-"""
-Phase 5: Dashboard Provisioning
+"""Dashboard Provisioning.
 
 Auto-deploys Lakeview dashboard for global health visibility.
 Supports per-group dashboard deployment and cleanup.

@@ -1,5 +1,4 @@
-"""
-Phase 3: Unified Metrics Aggregator
+"""Unified Metrics Aggregator.
 
 Creates unified views across all profile_metrics and drift_metrics tables
 for centralized observability. Supports per-group aggregation.

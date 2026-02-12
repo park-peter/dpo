@@ -161,7 +161,6 @@ class MonitoredTableConfig(BaseModel):
     model_id_column: Optional[str] = Field(
         None, description="Column containing model version/ID"
     )
-    # Phase 2: Enrichment metadata
     owner: Optional[str] = Field(
         None, description="Table owner (overrides UC tag fallback)"
     )
@@ -171,7 +170,6 @@ class MonitoredTableConfig(BaseModel):
     lineage_url: Optional[str] = Field(
         None, description="Lineage URL for data provenance context"
     )
-    # Phase 2: Per-table drift threshold override
     drift_threshold: Optional[float] = Field(
         None,
         ge=0.0,

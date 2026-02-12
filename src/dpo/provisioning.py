@@ -1,5 +1,4 @@
-"""
-Phase 2: Idempotent Provisioning Controller
+"""Idempotent Provisioning Controller.
 
 Manages the create/update lifecycle of Data Profiling monitors.
 """
