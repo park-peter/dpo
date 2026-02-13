@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "databricks-dpo"
-version = "0.2.0"
+version = "0.3.0rc1"
 description = "Data Profiling Orchestrator - Automate Databricks Data Profiling at scale"
 readme = "README.md"
 license = {text = "GPL-3.0-only"}
