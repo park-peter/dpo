@@ -53,6 +53,23 @@ class TestDriftAlert:
         assert "drift_type" in query_sql
         assert "CRITICAL" in query_sql
         assert "WARNING" in query_sql
+        assert "COALESCE(drift_threshold, 0.2)" in query_sql
+        assert "CAST(1 AS DOUBLE) as trigger_value" in query_sql
+
+    def test_drift_alert_uses_row_level_trigger_evaluation(
+        self, mock_workspace_client, sample_config
+    ):
+        """Evaluation should use trigger_value so per-table thresholds drive alert rows."""
+        alerter = AlertProvisioner(mock_workspace_client, sample_config)
+
+        alerter.create_unified_drift_alert(
+            "catalog.schema.unified_drift", "test_catalog"
+        )
+
+        call_args = mock_workspace_client.alerts_v2.create_alert.call_args
+        alert_v2 = call_args.kwargs.get("alert")
+        assert alert_v2.evaluation.source.name == "trigger_value"
+        assert alert_v2.evaluation.threshold.value.double_value == 1.0
 
     def test_drift_alert_updates_existing(
         self, mock_workspace_client, sample_config
@@ -223,7 +240,7 @@ class TestTieredAlerts:
     def test_tiered_thresholds_calculated(
         self, mock_workspace_client, sample_config
     ):
-        """Test tiered thresholds are calculated correctly."""
+        """Tiered queries should respect per-table threshold overrides with global fallback."""
         sample_config.alerting.drift_threshold = 0.4
         alerter = AlertProvisioner(mock_workspace_client, sample_config)
 
@@ -232,10 +249,14 @@ class TestTieredAlerts:
         )
 
         warning_query = queries["[DPO] Warning Query - test_catalog"]
-        assert "0.2" in warning_query
+        assert "COALESCE(drift_threshold, 0.4)" in warning_query
+        assert (
+            "LEAST(COALESCE(drift_threshold, 0.4), "
+            "GREATEST(0.1, COALESCE(drift_threshold, 0.4) / 2.0))"
+        ) in warning_query
 
         critical_query = queries["[DPO] Critical Query - test_catalog"]
-        assert "0.4" in critical_query
+        assert "COALESCE(drift_threshold, 0.4)" in critical_query
 
 
 class TestAlertStatusQuery:
@@ -258,14 +279,39 @@ class TestAlertStatusQuery:
     def test_get_alert_status_query_uses_dynamic_warning_threshold(
         self, mock_workspace_client, sample_config
     ):
-        """Warning threshold should track configured drift threshold."""
+        """Status query should use per-table thresholds with global fallback."""
         sample_config.alerting.drift_threshold = 0.4
         alerter = AlertProvisioner(mock_workspace_client, sample_config)
 
         query = alerter.get_alert_status_query("catalog.schema.unified_drift")
 
-        assert "js_divergence >= 0.2" in query
-        assert "js_divergence < 0.4" in query
+        assert "COALESCE(drift_threshold, 0.4)" in query
+        assert (
+            "LEAST(COALESCE(drift_threshold, 0.4), "
+            "GREATEST(0.1, COALESCE(drift_threshold, 0.4) / 2.0))"
+        ) in query
+
+    def test_drift_alert_low_threshold_uses_safe_warning_lower_bound(
+        self, mock_workspace_client, sample_config
+    ):
+        """Low critical thresholds should not be filtered out by warning logic."""
+        sample_config.alerting.drift_threshold = 0.05
+        alerter = AlertProvisioner(mock_workspace_client, sample_config)
+
+        alerter.create_unified_drift_alert(
+            "catalog.schema.unified_drift", "test_catalog"
+        )
+
+        call_args = mock_workspace_client.alerts_v2.create_alert.call_args
+        alert_v2 = call_args.kwargs.get("alert")
+        query_sql = alert_v2.query_text
+
+        warning_expr = (
+            "LEAST(COALESCE(drift_threshold, 0.05), "
+            "GREATEST(0.1, COALESCE(drift_threshold, 0.05) / 2.0))"
+        )
+        assert warning_expr in query_sql
+        assert f"WHERE js_divergence >= {warning_expr}" in query_sql
 
 
 class TestSubscriptionResolution:

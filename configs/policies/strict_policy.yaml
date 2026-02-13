@@ -1,0 +1,26 @@
+# =============================================================================
+# DPO Strict Policy Template
+# =============================================================================
+#
+# Stricter governance for production ML monitoring.
+# Use this template when you need tighter controls.
+# =============================================================================
+
+naming_patterns:
+  - "^prod\\..*"
+
+required_tags:
+  - "owner"
+  - "department"
+
+forbidden_patterns:
+  - ".*_tmp$"
+  - ".*_test$"
+  - ".*_scratch$"
+  - ".*_staging$"
+
+require_baseline: true
+
+require_slicing: true
+
+max_tables_per_config: 200

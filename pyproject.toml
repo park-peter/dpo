@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dpo"
-version = "0.1.0"
+name = "databricks-dpo"
+version = "0.2.0"
 description = "Data Profiling Orchestrator - Automate Databricks Data Profiling at scale"
 readme = "README.md"
 license = {text = "GPL-3.0-only"}
@@ -19,6 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "databricks-sdk>=0.77.0",
@@ -26,20 +27,25 @@ dependencies = [
     "pydantic>=2.0",
     "tenacity>=8.0",
     "tabulate>=0.9.0",
-    "pytest-cov>=7.0.0",
+    "click>=8.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-mock",
+    "pytest-cov>=7.0.0",
     "black",
     "ruff",
 ]
 
+[project.scripts]
+dpo = "dpo.cli:main"
+
 [project.urls]
 "Homepage" = "https://github.com/databricks/solution-accelerators"
 "Bug Tracker" = "https://github.com/databricks/solution-accelerators/issues"
+"Changelog" = "https://github.com/databricks/solution-accelerators/blob/main/DPO/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -51,6 +57,7 @@ target-version = ['py311', 'py312']
 
 [tool.ruff]
 line-length = 120
+extend-exclude = ["notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

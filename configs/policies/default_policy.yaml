@@ -1,0 +1,37 @@
+# =============================================================================
+# DPO Default Policy Template
+# =============================================================================
+#
+# Copy and adapt this file for your team's governance requirements.
+# Reference it in your DPO config under the 'policy' key.
+#
+# These checks run during `dpo validate`.
+# =============================================================================
+
+# Table naming patterns (regex). Tables MUST match at least one pattern.
+# Empty list = no naming constraint.
+naming_patterns: []
+  # Example: Require all tables to be in the 'prod' catalog
+  # - "^prod\\..*"
+
+# Tags that must be present on all monitored tables.
+# Validated during `dpo validate --check-workspace`.
+required_tags: []
+  # Example: Require owner and department tags
+  # - "owner"
+  # - "department"
+
+# Forbidden table name patterns (regex). Tables must NOT match these.
+forbidden_patterns:
+  - ".*_tmp$"
+  - ".*_test$"
+  - ".*_scratch$"
+
+# Require baseline_table_name for all inference monitors.
+require_baseline: false
+
+# Require at least one slicing_expr per table.
+require_slicing: false
+
+# Maximum number of tables per config file (null = unlimited).
+max_tables_per_config: null

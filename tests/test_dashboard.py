@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
+from dpo.coverage import CoverageReport, OrphanMonitor, StaleMonitor, UnmonitoredTable
 from dpo.dashboard import DashboardProvisioner
 
 
@@ -48,6 +49,10 @@ class TestDashboardProvisioner:
         ds_by_name = {ds["name"]: ds for ds in serialized["datasets"]}
         assert "unified_drift" in ds_by_name
         assert "unified_profile" in ds_by_name
+        assert "coverage_summary" in ds_by_name
+        assert "coverage_unmonitored" in ds_by_name
+        assert "coverage_stale" in ds_by_name
+        assert "coverage_orphans" in ds_by_name
         assert (
             ds_by_name["unified_drift"]["query"]
             == "SELECT * FROM test_catalog.global_monitoring.unified_drift_metrics"
@@ -100,9 +105,12 @@ class TestDashboardProvisioner:
         fields = summary_widget["queries"][0]["query"]["fields"]
         fields_by_name = {field["name"]: field["expression"] for field in fields}
 
-        assert ">= 0.4" in fields_by_name["critical_alerts"]
-        assert ">= 0.2" in fields_by_name["warning_alerts"]
-        assert "< 0.4" in fields_by_name["warning_alerts"]
+        assert "COALESCE(`drift_threshold`, 0.4)" in fields_by_name["critical_alerts"]
+        assert (
+            "LEAST(COALESCE(`drift_threshold`, 0.4), "
+            "GREATEST(0.1, COALESCE(`drift_threshold`, 0.4) / 2.0))"
+        ) in fields_by_name["warning_alerts"]
+        assert "< COALESCE(`drift_threshold`, 0.4)" in fields_by_name["warning_alerts"]
 
     def test_deploy_dashboard_raises_when_create_fails(
         self, mock_workspace_client, sample_config
@@ -173,15 +181,65 @@ class TestDashboardProvisioner:
                     "/Workspace/Shared/DPO",
                     unified_profile_view="cat.sch.profile_ml",
                     dashboard_name="DPO Health - ml_team",
+                    coverage_report=None,
                 ),
                 call(
                     "cat.sch.drift_default",
                     "/Workspace/Shared/DPO",
                     unified_profile_view="cat.sch.profile_default",
                     dashboard_name="DPO Health - default",
+                    coverage_report=None,
                 ),
             ]
         )
+
+    def test_deploy_dashboard_injects_coverage_report_queries(
+        self, mock_workspace_client, sample_config
+    ):
+        """Coverage page datasets should use CoverageAnalyzer output snapshots."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(
+            dashboard_id="dash_cov"
+        )
+        coverage_report = CoverageReport(
+            timestamp="2026-02-10T18:00:00+00:00",
+            total_catalog_tables=5,
+            total_monitored=3,
+            unmonitored=[
+                UnmonitoredTable(full_name="test_catalog.ml.unmon", schema_name="ml")
+            ],
+            stale=[
+                StaleMonitor(
+                    table_name="test_catalog.ml.stale",
+                    monitor_id="m1",
+                    days_since_refresh=45,
+                    status="ACTIVE",
+                )
+            ],
+            orphans=[
+                OrphanMonitor(table_name="test_catalog.ml.orphan", monitor_id="m2")
+            ],
+        )
+
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        provisioner.deploy_dashboard(
+            unified_drift_view="test_catalog.global_monitoring.unified_drift_metrics",
+            parent_path="/Workspace/Shared/DPO",
+            coverage_report=coverage_report,
+        )
+
+        dashboard_payload = mock_workspace_client.lakeview.create.call_args.kwargs[
+            "dashboard"
+        ]
+        serialized = json.loads(dashboard_payload.serialized_dashboard)
+        ds_by_name = {ds["name"]: ds for ds in serialized["datasets"]}
+
+        assert "snapshot_timestamp_utc" in ds_by_name["coverage_summary"]["query"]
+        assert "2026-02-10T18:00:00+00:00" in ds_by_name["coverage_summary"]["query"]
+        assert "5 AS total_catalog_tables" in ds_by_name["coverage_summary"]["query"]
+        assert "test_catalog.ml.unmon" in ds_by_name["coverage_unmonitored"]["query"]
+        assert "test_catalog.ml.stale" in ds_by_name["coverage_stale"]["query"]
+        assert "test_catalog.ml.orphan" in ds_by_name["coverage_orphans"]["query"]
 
     def test_cleanup_stale_dashboards_deletes_inactive_groups(
         self, mock_workspace_client, sample_config
@@ -227,6 +285,20 @@ class TestDashboardProvisioner:
         )
 
         assert deleted == []
+
+    def test_cleanup_stale_dashboards_skips_on_empty_active_groups(
+        self, mock_workspace_client, sample_config
+    ):
+        """Empty active_group_names should skip cleanup to prevent accidental deletion."""
+        stale = MagicMock(display_name="DPO Health - ml_team", dashboard_id="dash_ml")
+        mock_workspace_client.lakeview.list.return_value = [stale]
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+
+        deleted = provisioner.cleanup_stale_dashboards("/Workspace/Shared/DPO", set())
+
+        assert deleted == []
+        mock_workspace_client.lakeview.list.assert_not_called()
+        mock_workspace_client.lakeview.trash.assert_not_called()
 
     def test_generate_custom_dashboard_template(
         self, mock_workspace_client, sample_config

@@ -11,32 +11,6 @@ from dpo.discovery import DiscoveredTable
 class TestMetricsAggregator:
     """Tests for MetricsAggregator class."""
 
-    def test_standard_drift_columns(self, mock_workspace_client, sample_config):
-        """Test standard drift columns are defined."""
-        aggregator = MetricsAggregator(mock_workspace_client, sample_config)
-
-        # Should include key drift metrics
-        columns_str = " ".join(aggregator.STANDARD_DRIFT_COLUMNS)
-        assert "js_divergence" in columns_str
-        assert "ks_statistic" in columns_str
-        assert "wasserstein_distance" in columns_str
-        assert "chi_square_statistic" in columns_str
-        assert "drift_type" in columns_str
-        assert "window_start" in columns_str
-        assert "window_end" in columns_str
-
-    def test_standard_profile_columns(self, mock_workspace_client, sample_config):
-        """Test standard profile columns are defined."""
-        aggregator = MetricsAggregator(mock_workspace_client, sample_config)
-
-        columns_str = " ".join(aggregator.STANDARD_PROFILE_COLUMNS)
-        assert "record_count" in columns_str
-        assert "null_count" in columns_str
-        assert "null_rate" in columns_str
-        assert "distinct_count" in columns_str
-        assert "mean" in columns_str
-        assert "stddev" in columns_str
-
 
 class TestUnifiedDriftView:
     """Tests for unified drift view generation."""
@@ -103,6 +77,38 @@ class TestUnifiedDriftView:
         assert "'data_team'" in ddl  # owner tag
         assert "'analytics'" in ddl  # department tag
         assert "1 as priority" in ddl  # priority tag
+
+    def test_drift_view_includes_per_table_threshold_override(
+        self, mock_workspace_client, sample_config, sample_discovered_table
+    ):
+        """Per-table drift_threshold should be materialized into unified drift view."""
+        sample_config.monitored_tables[sample_discovered_table.full_name].drift_threshold = 0.35
+        aggregator = MetricsAggregator(mock_workspace_client, sample_config)
+
+        ddl = aggregator._generate_unified_drift_view_ddl(
+            [sample_discovered_table],
+            "catalog.schema.unified_drift",
+            use_materialized=False,
+        )
+
+        assert "CAST(0.35 AS DOUBLE) as drift_threshold" in ddl
+
+    def test_drift_view_escapes_enrichment_literals(
+        self, mock_workspace_client, sample_config, sample_discovered_table
+    ):
+        """Single quotes in enrichment metadata should be escaped in SQL literals."""
+        sample_discovered_table.runbook_url = "https://docs.example.com/o'hara"
+        sample_discovered_table.lineage_url = "https://lineage.example.com/team's-view"
+        aggregator = MetricsAggregator(mock_workspace_client, sample_config)
+
+        ddl = aggregator._generate_unified_drift_view_ddl(
+            [sample_discovered_table],
+            "catalog.schema.unified_drift",
+            use_materialized=False,
+        )
+
+        assert "o''hara" in ddl
+        assert "team''s-view" in ddl
 
 
 class TestUnifiedProfileView:
@@ -358,6 +364,21 @@ class TestCleanupStaleViews:
         )
 
         assert dropped == []
+
+
+    def test_cleanup_stale_views_skips_on_empty_active_groups(
+        self, mock_workspace_client, sample_config
+    ):
+        """Empty active_groups should skip cleanup to prevent accidental deletion."""
+        aggregator = MetricsAggregator(mock_workspace_client, sample_config)
+
+        dropped = aggregator.cleanup_stale_views(
+            "test_catalog.global_monitoring",
+            active_groups=set(),
+        )
+
+        assert dropped == []
+        mock_workspace_client.statement_execution.execute_statement.assert_not_called()
 
 
 class TestViewExecution:
