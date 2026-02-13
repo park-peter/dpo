@@ -470,7 +470,7 @@ class TestProvisioningCustomMetrics:
             mock_workspace_client, config_with_custom_metrics
         )
 
-        metrics = provisioner._build_custom_metrics()
+        metrics = provisioner._build_custom_metrics(sample_discovered_table)
 
         assert len(metrics) == 2
         assert metrics[0].name == "revenue_sum"
@@ -830,7 +830,7 @@ class TestProvisioningEdgeCases:
             ProfileProvisioner._provision_single.__wrapped__(provisioner, sample_discovered_table)
 
     def test_build_custom_metrics_skips_unknown_metric_type(
-        self, mock_workspace_client, sample_config
+        self, mock_workspace_client, sample_config, sample_discovered_table
     ):
         """Unknown custom metric types should be skipped."""
         bad_metric = MagicMock()
@@ -842,17 +842,17 @@ class TestProvisioningEdgeCases:
         sample_config.profile_defaults.custom_metrics = [bad_metric]
         provisioner = ProfileProvisioner(mock_workspace_client, sample_config)
 
-        metrics = provisioner._build_custom_metrics()
+        metrics = provisioner._build_custom_metrics(sample_discovered_table)
 
         assert metrics == []
 
-    def test_serialize_custom_metrics_from_config(
-        self, mock_workspace_client, config_with_custom_metrics
+    def test_serialize_resolved_custom_metrics(
+        self, mock_workspace_client, config_with_custom_metrics, sample_discovered_table
     ):
-        """Configured custom metrics should serialize to deterministic dict format."""
+        """Resolved custom metrics (three-tier merge) should serialize to deterministic dict format."""
         provisioner = ProfileProvisioner(mock_workspace_client, config_with_custom_metrics)
 
-        serialized = provisioner._serialize_custom_metrics_from_config()
+        serialized = provisioner._serialize_resolved_custom_metrics(sample_discovered_table)
 
         assert len(serialized) == 2
         assert serialized[0]["name"] == "revenue_sum"

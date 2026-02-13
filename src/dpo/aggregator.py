@@ -40,6 +40,7 @@ class MetricsAggregator:
         "CAST(wasserstein_distance AS DOUBLE) as wasserstein_distance",
         "CAST(chi_square_statistic AS DOUBLE) as chi_square_statistic",
         "drift_type",
+        "granularity",
         "slice_key",
         "slice_value",
     ]
@@ -57,6 +58,26 @@ class MetricsAggregator:
         "CAST(stddev AS DOUBLE) as stddev",
         "CAST(min AS DOUBLE) as min_value",
         "CAST(max AS DOUBLE) as max_value",
+        "granularity",
+        "slice_key",
+        "slice_value",
+    ]
+
+    INFERENCE_PERFORMANCE_COLUMNS = [
+        "window_start",
+        "window_end",
+        "granularity",
+        "column_name",
+        "accuracy_score",
+        "log_loss",
+        "precision.weighted as precision_weighted",
+        "recall.weighted as recall_weighted",
+        "f1_score.weighted as f1_weighted",
+        "mean_squared_error",
+        "root_mean_squared_error",
+        "mean_average_error",
+        "mean_absolute_percentage_error",
+        "r2_score",
         "slice_key",
         "slice_value",
     ]
@@ -189,6 +210,112 @@ class MetricsAggregator:
 
         return ddl
 
+    def create_unified_performance_view(
+        self,
+        discovered_tables: List[DiscoveredTable],
+        output_view: str,
+        use_materialized: Optional[bool] = None,
+    ) -> str:
+        """Create a unified view for inference performance metrics.
+
+        Only includes INFERENCE-type monitors, filtered to column_name=':table'
+        where model-level performance metrics live.
+
+        Args:
+            discovered_tables: Tables with active monitors.
+            output_view: Full view name for the performance view.
+            use_materialized: Force materialized view (auto-detect if None).
+
+        Returns:
+            The DDL statement that was executed.
+        """
+        if use_materialized is None:
+            use_materialized = self._supports_materialized_views()
+
+        self._ensure_output_schema(output_view)
+
+        view_type = "MATERIALIZED VIEW" if use_materialized else "VIEW"
+        columns_sql = ", ".join(self.INFERENCE_PERFORMANCE_COLUMNS)
+
+        union_parts = []
+        for table in discovered_tables:
+            table_cfg = self.config.monitored_tables.get(table.full_name)
+            effective_profile_type = self.config.profile_defaults.profile_type
+            if table_cfg and hasattr(table_cfg, "profile_type") and table_cfg.profile_type:
+                effective_profile_type = table_cfg.profile_type
+
+            if effective_profile_type != "INFERENCE":
+                continue
+
+            owner = table.owner or table.tags.get("owner", "unknown")
+            profile_table = (
+                f"{self.catalog}.{self.output_schema}."
+                f"{table.table_name}_profile_metrics"
+            )
+
+            union_parts.append(f"""
+                SELECT
+                    {columns_sql},
+                    {self._sql_literal(table.full_name)} as source_table_name,
+                    {self._sql_literal(owner)} as owner
+                FROM {profile_table}
+                WHERE column_name = ':table'
+            """)
+
+        if not union_parts:
+            ddl = f"""
+            CREATE OR REPLACE {view_type} {output_view} AS
+            SELECT
+                CAST(NULL AS TIMESTAMP) as window_start,
+                CAST(NULL AS TIMESTAMP) as window_end,
+                CAST(NULL AS STRING) as granularity,
+                CAST(NULL AS STRING) as column_name,
+                CAST(NULL AS DOUBLE) as accuracy_score,
+                CAST(NULL AS DOUBLE) as log_loss,
+                CAST(NULL AS DOUBLE) as precision_weighted,
+                CAST(NULL AS DOUBLE) as recall_weighted,
+                CAST(NULL AS DOUBLE) as f1_weighted,
+                CAST(NULL AS DOUBLE) as mean_squared_error,
+                CAST(NULL AS DOUBLE) as root_mean_squared_error,
+                CAST(NULL AS DOUBLE) as mean_average_error,
+                CAST(NULL AS DOUBLE) as mean_absolute_percentage_error,
+                CAST(NULL AS DOUBLE) as r2_score,
+                CAST(NULL AS STRING) as slice_key,
+                CAST(NULL AS STRING) as slice_value,
+                CAST(NULL AS STRING) as source_table_name,
+                CAST(NULL AS STRING) as owner
+            WHERE 1=0
+            """
+        else:
+            ddl = (
+                f"CREATE OR REPLACE {view_type} {output_view} AS "
+                + " UNION ALL ".join(union_parts)
+            )
+
+        logger.info(
+            "Creating unified performance view: %s (materialized=%s)",
+            output_view,
+            use_materialized,
+        )
+
+        try:
+            result = self.w.statement_execution.execute_statement(
+                warehouse_id=self.warehouse_id,
+                statement=ddl,
+                wait_timeout="120s",
+            )
+
+            if result.status and result.status.state.value == "FAILED":
+                raise RuntimeError(f"Failed to create view: {result.status.error}")
+
+            logger.info("Unified performance view created successfully: %s", output_view)
+
+        except Exception as e:
+            logger.error("Failed to create unified performance view: %s", e)
+            raise
+
+        return ddl
+
     def _generate_unified_drift_view_ddl(
         self,
         discovered_tables: List[DiscoveredTable],
@@ -237,6 +364,7 @@ class MetricsAggregator:
                 CAST(NULL AS DOUBLE) as wasserstein_distance,
                 CAST(NULL AS DOUBLE) as chi_square_statistic,
                 CAST(NULL AS STRING) as drift_type,
+                CAST(NULL AS STRING) as granularity,
                 CAST(NULL AS STRING) as slice_key,
                 CAST(NULL AS STRING) as slice_value,
                 CAST(NULL AS STRING) as source_table_name,
@@ -304,6 +432,7 @@ class MetricsAggregator:
                 CAST(NULL AS DOUBLE) as stddev,
                 CAST(NULL AS DOUBLE) as min_value,
                 CAST(NULL AS DOUBLE) as max_value,
+                CAST(NULL AS STRING) as granularity,
                 CAST(NULL AS STRING) as slice_key,
                 CAST(NULL AS STRING) as slice_value,
                 CAST(NULL AS STRING) as source_table_name,

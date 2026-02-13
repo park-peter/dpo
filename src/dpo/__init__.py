@@ -31,7 +31,7 @@ from dpo.utils import (
     verify_view_permissions,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0rc1"
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ class OrchestrationReport:
     drift_alert_ids: Dict[str, str] = field(default_factory=dict)
     quality_alert_ids: Dict[str, str] = field(default_factory=dict)
     dashboard_ids: Dict[str, str] = field(default_factory=dict)
+    rollup_dashboard_id: Optional[str] = None
     monitor_statuses: List[MonitorStatus] = field(default_factory=list)
     # Dry-run structured report
     impact_report: Optional[ImpactReport] = None
@@ -103,6 +104,7 @@ class OrchestrationReport:
             "drift_alert_ids": self.drift_alert_ids,
             "quality_alert_ids": self.quality_alert_ids,
             "dashboard_ids": self.dashboard_ids,
+            "rollup_dashboard_id": self.rollup_dashboard_id,
         }
         if self.impact_report:
             data["impact"] = self.impact_report.to_dict()
@@ -183,8 +185,12 @@ def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
     """Simplified mode: Provision monitors only."""
     from databricks.sdk import WorkspaceClient
 
+    from dpo.validators import run_preflight_checks
+
     w = WorkspaceClient()
     catalog = config.catalog_name
+
+    run_preflight_checks(config, w)
 
     verify_output_schema_permissions(
         w=w,
@@ -250,11 +256,16 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
 
     from databricks.sdk import WorkspaceClient
 
+    from dpo.validators import run_preflight_checks
+
     w = WorkspaceClient()
     catalog = config.catalog_name
     output_schema = f"{catalog}.global_monitoring"
 
-    # 1. Pre-flight permission checks
+    # 1. Pre-flight checks (UC functions, etc.)
+    run_preflight_checks(config, w)
+
+    # 2. Pre-flight permission checks
     verify_output_schema_permissions(
         w=w,
         catalog=catalog,
@@ -327,17 +338,40 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
         alerter = AlertProvisioner(w, config)
         alerts_by_group = alerter.create_alerts_by_group(views_by_group, catalog)
 
-    # 8. Dashboards
+    # 8. Performance views
+    perf_view: Optional[str] = None
+    if not config.dry_run and healthy_tables:
+        try:
+            perf_view = f"{output_schema}.unified_performance_metrics"
+            aggregator.create_unified_performance_view(healthy_tables, perf_view)
+        except Exception as e:
+            logger.warning("Performance view creation failed (continuing): %s", e)
+            perf_view = None
+
+    # 9. Dashboards
     dashboards_by_group = {}
+    rollup_dashboard_id = None
     if config.deploy_aggregated_dashboard and not config.dry_run and views_by_group:
         dashboard_provisioner = DashboardProvisioner(w, config)
         dashboards_by_group = dashboard_provisioner.deploy_dashboards_by_group(
-            views_by_group, config.dashboard_parent_path, coverage_report=coverage_report
+            views_by_group,
+            config.dashboard_parent_path,
+            unified_performance_view=perf_view,
+            coverage_report=coverage_report,
         )
         active_group_names = set(views_by_group.keys())
         dashboard_provisioner.cleanup_stale_dashboards(
             config.dashboard_parent_path, active_group_names
         )
+
+        # Executive rollup
+        if config.deploy_executive_rollup and len(views_by_group) > 1:
+            try:
+                rollup_dashboard_id = dashboard_provisioner.deploy_executive_rollup(
+                    views_by_group, config.dashboard_parent_path, coverage_report=coverage_report
+                )
+            except Exception as e:
+                logger.warning("Executive rollup dashboard failed (continuing): %s", e)
 
     return OrchestrationReport(
         tables_discovered=len(tables),
@@ -351,6 +385,7 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
         drift_alert_ids={g: a[0] for g, a in alerts_by_group.items() if a[0]},
         quality_alert_ids={g: a[1] for g, a in alerts_by_group.items() if a[1]},
         dashboard_ids=dashboards_by_group,
+        rollup_dashboard_id=rollup_dashboard_id,
         monitor_statuses=monitor_statuses,
         impact_report=impact_report,
         coverage_report=coverage_report,

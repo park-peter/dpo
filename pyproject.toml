@@ -62,3 +62,8 @@ extend-exclude = ["notebooks"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

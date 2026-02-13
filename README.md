@@ -458,6 +458,115 @@ from dpo import (
 - SQL Warehouse for statement execution
 - Appropriate permissions on target catalog/schema
 
+---
+
+## Objective Function Registry
+
+For simple metric expressions, use `custom_metrics` directly. For complex logic (joins, UDFs, sklearn), create a UC SQL function first, then reference it in the metric definition.
+
+### UC Function Pattern
+
+```sql
+-- Step 1: Create a UC SQL function for complex logic
+CREATE FUNCTION catalog.schema.roc_auc_score_func(predictions ARRAY<DOUBLE>, labels ARRAY<INT>)
+RETURNS DOUBLE
+LANGUAGE PYTHON
+AS $$
+from sklearn.metrics import roc_auc_score
+return float(roc_auc_score(labels, predictions))
+$$;
+```
+
+```yaml
+# Step 2: Reference it in DPO config
+objective_functions:
+  churn_30d_rocauc:
+    version: "1.2"
+    owner: ml_team
+    description: "ROC AUC for 30-day churn prediction"
+    uc_function_name: catalog.schema.roc_auc_score_func
+    metric:
+      name: rocauc_30d
+      metric_type: aggregate
+      input_columns: [":table"]
+      definition: "catalog.schema.roc_auc_score_func({{prediction_col}}, {{label_col}})"
+      output_type: double
+```
+
+### Custom Metric Expression Constraints
+
+Custom metric definitions are **Jinja-templated SQL expressions**, not full SQL statements. They cannot contain joins or subqueries. For complex logic, wrap it in a UC SQL function and reference it in the definition.
+
+## Jinja Template Variable Reference
+
+DPO passes metric definitions through to Databricks verbatim. Databricks renders the Jinja templates.
+
+| Variable | Available When | Description |
+|---|---|---|
+| `{{input_column}}` | Single-column aggregate/derived metrics | The column being processed |
+| `{{prediction_col}}` | InferenceLog monitors | Prediction column value |
+| `{{label_col}}` | InferenceLog monitors | Label/ground truth column value |
+| `{{current_df}}` | Drift metrics | Current time window data reference |
+| `{{base_df}}` | Drift metrics | Baseline data reference |
+
+Additionally, any name listed in `input_columns` is a valid template variable (e.g., `{{null_count}}`, `{{count}}`).
+
+## Supported Granularities
+
+DPO supports all Databricks Data Profiling aggregation granularities:
+
+| Granularity | Use Case |
+|---|---|
+| `5 minutes` | Real-time streaming inference |
+| `30 minutes` | Near real-time monitoring |
+| `1 hour` | Standard streaming workloads |
+| `1 day` | Default; most batch workloads |
+| `1 week` | Weekly batch processing |
+| `2 weeks` | Bi-weekly reporting cycles |
+| `3 weeks` | Custom sprint cycles |
+| `4 weeks` | Monthly-adjacent reporting |
+| `1 month` | Monthly batch/financial cycles |
+| `1 year` | Annual trend analysis |
+
+### Multi-Granularity
+
+DPO supports multiple granularities per monitor. Use `granularities` (plural) for dual leading/lagging indicators:
+
+```yaml
+profile_defaults:
+  granularities: ["1 day", "1 month"]
+```
+
+The singular `granularity` field is still supported as a fallback. When `granularities` is set, it takes precedence.
+
+## Windowing Strategy
+
+### 30-Day Initial Lookback
+
+When a monitor is first created, Databricks processes the last 30 days of data. This is **not** a hard constraint on evaluation windows. Subsequent refreshes process all new/changed data, especially when Change Data Feed (CDF) is enabled.
+
+### Delayed Ground Truth Workflow
+
+For models with delayed labels (30/60/90 days):
+
+1. Labels are backfilled into the monitored inference table as they become available
+2. On the next DPO refresh, Databricks reprocesses windows containing new label data
+3. Performance metrics update automatically for those windows
+
+DPO does not orchestrate the label backfill itself -- that is an ETL concern. DPO picks up the updated data on refresh.
+
+### Change Data Feed (CDF) Recommendation
+
+Enable Change Data Feed on monitored tables for efficient incremental processing:
+
+```sql
+ALTER TABLE catalog.schema.inference_table SET TBLPROPERTIES (delta.enableChangeDataFeed = true);
+```
+
+This allows Databricks to process only changed rows on subsequent refreshes rather than re-scanning entire partitions.
+
+---
+
 ## License
 
 GPL v3

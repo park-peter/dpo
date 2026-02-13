@@ -1,10 +1,13 @@
 """Configuration models for DPO."""
 
 import logging
+import re
 from typing import Dict, List, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_GRANULARITIES = {
     "5 minutes",
@@ -12,7 +15,25 @@ ALLOWED_GRANULARITIES = {
     "1 hour",
     "1 day",
     "1 week",
+    "2 weeks",
+    "3 weeks",
+    "4 weeks",
     "1 month",
+    "1 year",
+}
+
+KNOWN_TEMPLATE_VARIABLES = {
+    "input_column",
+    "prediction_col",
+    "label_col",
+    "current_df",
+    "base_df",
+}
+
+INFERENCE_ONLY_VARS = {"prediction_col", "label_col"}
+INFERENCE_VAR_REQUIREMENTS = {
+    "prediction_col": "prediction_column",
+    "label_col": "label_column",
 }
 
 
@@ -111,26 +132,62 @@ class AlertConfig(BaseModel):
 class CustomMetricConfig(BaseModel):
     """Custom metric definition per Databricks Data Profiling docs.
 
-    Args:
-        name: Unique name for the metric.
-        metric_type: Either 'aggregate' (SQL expression) or 'derived' (Jinja template).
-        input_columns: List of columns used in the metric calculation.
-        definition: SQL expression for aggregate, Jinja template for derived.
-        output_type: Data type of the metric output.
+    Definitions use Databricks Jinja syntax -- DPO passes them through verbatim.
+    Supported template variables: {{input_column}}, {{prediction_col}},
+    {{label_col}}, {{current_df}}, {{base_df}}, and input_columns names.
     """
 
     name: str = Field(..., description="Unique metric name")
-    metric_type: Literal["aggregate", "derived"] = Field(
+    metric_type: Literal["aggregate", "derived", "drift"] = Field(
         ..., description="Type of metric calculation"
     )
     input_columns: List[str] = Field(
         ..., description="Columns used in calculation"
     )
     definition: str = Field(
-        ..., description="SQL for aggregate, Jinja for derived"
+        ..., description="Jinja-templated SQL expression"
     )
     output_type: Literal["double", "string"] = Field(
         "double", description="Output data type"
+    )
+
+    @model_validator(mode="after")
+    def _warn_unknown_template_vars(self) -> "CustomMetricConfig":
+        """Warn about template variables not in the known Databricks set or input_columns."""
+        found = set(re.findall(r"\{\{\s*(\w+)\s*\}\}", self.definition))
+        allowed = KNOWN_TEMPLATE_VARIABLES | set(self.input_columns or [])
+        unknown = found - allowed
+        if unknown:
+            logger.warning(
+                "Definition contains template variables not in the known Databricks set "
+                "or input_columns: %s. Databricks-supported variables: %s. "
+                "input_columns for this metric: %s",
+                unknown, KNOWN_TEMPLATE_VARIABLES, self.input_columns,
+            )
+        return self
+
+
+class ObjectiveFunctionConfig(BaseModel):
+    """Reusable objective function definition.
+
+    The dict key in objective_functions serves as the unique identifier.
+    Complex logic should be implemented as UC SQL functions (CREATE FUNCTION),
+    then referenced in the metric definition Jinja template.
+    Definitions use Databricks Jinja syntax -- DPO passes them through verbatim.
+    Supported template variables: {{input_column}}, {{prediction_col}},
+    {{label_col}}, {{current_df}}, {{base_df}}, and input_columns names.
+    """
+
+    version: str = Field("1.0", description="Semantic version for tracking changes")
+    owner: Optional[str] = Field(None, description="Team or individual owning this objective")
+    description: Optional[str] = Field(None, description="Human-readable description")
+    uc_function_name: Optional[str] = Field(
+        None,
+        description="Fully-qualified UC SQL function name (e.g., 'catalog.schema.roc_auc_func'). "
+        "DPO validates this function exists during 'dpo validate --check-workspace' and at run start.",
+    )
+    metric: CustomMetricConfig = Field(
+        ..., description="The custom metric definition that implements this objective"
     )
 
 
@@ -145,6 +202,11 @@ class MonitoredTableConfig(BaseModel):
     )
     granularity: Optional[str] = Field(
         None, description="Aggregation granularity (e.g., '1 day', '1 hour')"
+    )
+    granularities: Optional[List[str]] = Field(
+        None,
+        description="Multiple aggregation granularities (e.g., ['1 day', '1 month']). "
+        "Takes precedence over singular 'granularity' field.",
     )
     problem_type: Optional[
         Literal["PROBLEM_TYPE_CLASSIFICATION", "PROBLEM_TYPE_REGRESSION"]
@@ -176,6 +238,15 @@ class MonitoredTableConfig(BaseModel):
         le=1.0,
         description="Per-table JS divergence threshold (overrides alerting.drift_threshold)",
     )
+    objective_function_ids: Optional[List[str]] = Field(
+        None,
+        description="List of objective function ids from the registry to apply to this table.",
+    )
+    custom_metrics: Optional[List[CustomMetricConfig]] = Field(
+        None,
+        description="Per-table custom metrics. Merged with profile_defaults.custom_metrics "
+        "and resolved objective_function metrics at provisioning time.",
+    )
 
     @field_validator("granularity")
     @classmethod
@@ -190,12 +261,41 @@ class MonitoredTableConfig(BaseModel):
             )
         return v
 
+    @field_validator("granularities")
+    @classmethod
+    def validate_granularities_list(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Validate each entry in the granularities list."""
+        if v is None:
+            return v
+        for g in v:
+            if g not in ALLOWED_GRANULARITIES:
+                allowed = ", ".join(sorted(ALLOWED_GRANULARITIES))
+                raise ValueError(
+                    f"Unsupported granularity '{g}' in granularities list. Allowed values: {allowed}"
+                )
+        return v
+
+    @model_validator(mode="after")
+    def _check_within_layer_duplicates(self) -> "MonitoredTableConfig":
+        """Disallow duplicate metric names within per-table custom_metrics."""
+        if self.custom_metrics:
+            names = [m.name for m in self.custom_metrics]
+            dupes = [n for n in names if names.count(n) > 1]
+            if dupes:
+                raise ValueError(f"Duplicate metric names within custom_metrics: {set(dupes)}")
+        return self
+
 
 class ProfileConfig(BaseModel):
     """The master template for a Data Profiling monitor with SDK-style names."""
 
     profile_type: Literal["INFERENCE", "SNAPSHOT", "TIMESERIES"] = "INFERENCE"
     granularity: str = "1 day"
+    granularities: Optional[List[str]] = Field(
+        None,
+        description="Multiple aggregation granularities (e.g., ['1 day', '1 month']). "
+        "Takes precedence over singular 'granularity' field.",
+    )
     output_schema_name: str = Field(
         ..., description="Schema where metric tables will be created"
     )
@@ -244,6 +344,30 @@ class ProfileConfig(BaseModel):
             )
         return v
 
+    @field_validator("granularities")
+    @classmethod
+    def validate_granularities_list(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Validate each entry in the granularities list."""
+        if v is None:
+            return v
+        for g in v:
+            if g not in ALLOWED_GRANULARITIES:
+                allowed = ", ".join(sorted(ALLOWED_GRANULARITIES))
+                raise ValueError(
+                    f"Unsupported granularity '{g}' in granularities list. Allowed values: {allowed}"
+                )
+        return v
+
+    @model_validator(mode="after")
+    def _check_within_layer_duplicates(self) -> "ProfileConfig":
+        """Disallow duplicate metric names within profile_defaults custom_metrics."""
+        if self.custom_metrics:
+            names = [m.name for m in self.custom_metrics]
+            dupes = [n for n in names if names.count(n) > 1]
+            if dupes:
+                raise ValueError(f"Duplicate metric names within custom_metrics: {set(dupes)}")
+        return self
+
 
 class OrchestratorConfig(BaseModel):
     """Root configuration object for the DPO Application."""
@@ -284,6 +408,10 @@ class OrchestratorConfig(BaseModel):
     deploy_aggregated_dashboard: bool = Field(
         True, description="Auto-deploy aggregated Lakeview dashboard"
     )
+    deploy_executive_rollup: bool = Field(
+        True,
+        description="Deploy a cross-group executive rollup dashboard when multiple groups exist",
+    )
     dashboard_parent_path: str = Field(
         "/Workspace/Shared/DPO", description="Path for dashboard deployment"
     )
@@ -301,6 +429,11 @@ class OrchestratorConfig(BaseModel):
         30,
         ge=1,
         description="Number of days without a refresh before a monitor is considered stale",
+    )
+    objective_functions: Dict[str, ObjectiveFunctionConfig] = Field(
+        default={},
+        description="Registry of reusable objective function definitions. "
+        "Key is the objective function identifier.",
     )
 
     @field_validator("profile_defaults")
@@ -352,6 +485,71 @@ class OrchestratorConfig(BaseModel):
                     f"Table '{table_name}' catalog '{parts[0]}' does not match "
                     f"config catalog_name '{self.catalog_name}'"
                 )
+
+        # --- Objective function cross-reference checks ---
+        tables_with_objectives = {
+            name: cfg
+            for name, cfg in self.monitored_tables.items()
+            if cfg.objective_function_ids
+        }
+
+        if tables_with_objectives:
+            for table_name, table_cfg in tables_with_objectives.items():
+                for obj_id in table_cfg.objective_function_ids:
+                    if obj_id not in self.objective_functions:
+                        raise ValueError(
+                            f"Table '{table_name}' references objective function '{obj_id}' "
+                            f"which does not exist in the objective_functions registry. "
+                            f"Available: {list(self.objective_functions.keys())}"
+                        )
+
+            # Resolved-objective duplicate detection per table
+            for table_name, table_cfg in tables_with_objectives.items():
+                obj_metric_names = []
+                for obj_id in table_cfg.objective_function_ids:
+                    obj = self.objective_functions[obj_id]
+                    obj_metric_names.append(obj.metric.name)
+                dupes = [n for n in obj_metric_names if obj_metric_names.count(n) > 1]
+                if dupes:
+                    raise ValueError(
+                        f"Table '{table_name}' has multiple objectives resolving to the same "
+                        f"metric name: {set(dupes)}. Use distinct metric names or remove duplicates."
+                    )
+
+            # Template compatibility validation (per-variable)
+            for table_name, table_cfg in tables_with_objectives.items():
+                for obj_id in table_cfg.objective_function_ids:
+                    obj = self.objective_functions[obj_id]
+                    definition = obj.metric.definition
+                    found_vars = set(re.findall(r"\{\{\s*(\w+)\s*\}\}", definition))
+                    used_inference_vars = found_vars & INFERENCE_ONLY_VARS
+                    if not used_inference_vars:
+                        continue
+
+                    effective_profile_type = (
+                        getattr(table_cfg, "profile_type", None)
+                        or self.profile_defaults.profile_type
+                    )
+                    if effective_profile_type != "INFERENCE":
+                        raise ValueError(
+                            f"Objective '{obj_id}' uses inference template variables "
+                            f"{used_inference_vars} but table '{table_name}' resolves to "
+                            f"profile_type='{effective_profile_type}', not 'INFERENCE'."
+                        )
+
+                    for tpl_var, config_field in INFERENCE_VAR_REQUIREMENTS.items():
+                        if tpl_var not in found_vars:
+                            continue
+                        has_config = (
+                            getattr(table_cfg, config_field, None) is not None
+                            or getattr(self.profile_defaults, config_field, None) is not None
+                        )
+                        if not has_config:
+                            raise ValueError(
+                                f"Objective '{obj_id}' uses {{{{{tpl_var}}}}} "
+                                f"but table '{table_name}' has no {config_field} configured "
+                                f"(checked table-level and profile_defaults)."
+                            )
 
         return self
 

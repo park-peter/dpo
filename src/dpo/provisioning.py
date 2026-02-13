@@ -170,7 +170,11 @@ class ProfileProvisioner:
         "1 hour": AggregationGranularity.AGGREGATION_GRANULARITY_1_HOUR,
         "1 day": AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY,
         "1 week": AggregationGranularity.AGGREGATION_GRANULARITY_1_WEEK,
+        "2 weeks": AggregationGranularity.AGGREGATION_GRANULARITY_2_WEEKS,
+        "3 weeks": AggregationGranularity.AGGREGATION_GRANULARITY_3_WEEKS,
+        "4 weeks": AggregationGranularity.AGGREGATION_GRANULARITY_4_WEEKS,
         "1 month": AggregationGranularity.AGGREGATION_GRANULARITY_1_MONTH,
+        "1 year": AggregationGranularity.AGGREGATION_GRANULARITY_1_YEAR,
     }
 
     def __init__(
@@ -514,11 +518,20 @@ class ProfileProvisioner:
         """
         profile_type = self.config.profile_defaults.profile_type
 
-        granularity_str = self._resolve_setting(table, "granularity")
-        granularity = self.GRANULARITY_MAP.get(
-            granularity_str,
-            AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY,
-        )
+        granularities_cfg = self._resolve_setting(table, "granularities")
+        if granularities_cfg:
+            resolved_granularities = [
+                self.GRANULARITY_MAP.get(g, AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY)
+                for g in granularities_cfg
+            ]
+        else:
+            granularity_str = self._resolve_setting(table, "granularity")
+            resolved_granularities = [
+                self.GRANULARITY_MAP.get(
+                    granularity_str,
+                    AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY,
+                )
+            ]
 
         assets_dir = (
             f"/Workspace/Users/{self.username}/dpo_monitoring/{table.table_name}"
@@ -526,7 +539,7 @@ class ProfileProvisioner:
         skip_builtin_dashboard = not self.config.profile_defaults.create_builtin_dashboard
 
         baseline_table = self._resolve_setting(table, "baseline_table_name")
-        custom_metrics = self._build_custom_metrics()
+        custom_metrics = self._build_custom_metrics(table)
 
         if profile_type == "SNAPSHOT":
             return DataProfilingConfig(
@@ -549,7 +562,7 @@ class ProfileProvisioner:
                 skip_builtin_dashboard=skip_builtin_dashboard,
                 time_series=TimeSeriesConfig(
                     timestamp_column=ts_timestamp,
-                    granularities=[granularity],
+                    granularities=resolved_granularities,
                 ),
                 slicing_exprs=slicing_exprs if slicing_exprs else None,
                 baseline_table_name=baseline_table,
@@ -573,7 +586,7 @@ class ProfileProvisioner:
                     timestamp_column=timestamp_col,
                     label_column=label_col,
                     model_id_column=model_id_col,
-                    granularities=[granularity],
+                    granularities=resolved_granularities,
                 ),
                 slicing_exprs=slicing_exprs if slicing_exprs else None,
                 baseline_table_name=baseline_table,
@@ -583,20 +596,50 @@ class ProfileProvisioner:
     METRIC_TYPE_MAP = {
         "aggregate": DataProfilingCustomMetricType.DATA_PROFILING_CUSTOM_METRIC_TYPE_AGGREGATE,
         "derived": DataProfilingCustomMetricType.DATA_PROFILING_CUSTOM_METRIC_TYPE_DERIVED,
+        "drift": DataProfilingCustomMetricType.DATA_PROFILING_CUSTOM_METRIC_TYPE_DRIFT,
     }
 
-    def _build_custom_metrics(self) -> List[DataProfilingCustomMetric]:
-        """Build SDK custom metric objects from config.
+    def _build_custom_metrics(self, table: DiscoveredTable) -> List[DataProfilingCustomMetric]:
+        """Build SDK custom metric objects using three-tier merge.
+
+        Resolution order: per-table custom_metrics override objective function
+        metrics override profile_defaults. Cross-layer name collisions are
+        intentional overrides.
+
+        Args:
+            table: The discovered table to resolve metrics for.
 
         Returns:
             List of DataProfilingCustomMetric to embed in DataProfilingConfig.
         """
-        config_metrics = self.config.profile_defaults.custom_metrics
-        if not config_metrics:
-            return []
+        # Layer 1: profile_defaults.custom_metrics
+        merged = {m.name: m for m in (self.config.profile_defaults.custom_metrics or [])}
 
+        # Layer 2: resolved objective_functions
+        table_config = self.config.monitored_tables.get(table.full_name)
+        if table_config and table_config.objective_function_ids:
+            for obj_id in table_config.objective_function_ids:
+                obj_func = self.config.objective_functions[obj_id]
+                merged[obj_func.metric.name] = obj_func.metric
+
+        # Layer 3: per-table custom_metrics (highest priority)
+        if table_config and table_config.custom_metrics:
+            for m in table_config.custom_metrics:
+                merged[m.name] = m
+
+        return self._convert_to_sdk_metrics(list(merged.values()))
+
+    def _convert_to_sdk_metrics(self, metrics: List) -> List[DataProfilingCustomMetric]:
+        """Convert CustomMetricConfig list to SDK metric objects.
+
+        Args:
+            metrics: List of CustomMetricConfig instances.
+
+        Returns:
+            List of DataProfilingCustomMetric SDK objects.
+        """
         sdk_metrics = []
-        for metric in config_metrics:
+        for metric in metrics:
             metric_type = self.METRIC_TYPE_MAP.get(metric.metric_type)
             if metric_type is None:
                 logger.warning("Unknown metric type '%s', skipping", metric.metric_type)
@@ -615,17 +658,25 @@ class ProfileProvisioner:
     def _build_config_dict(self, table: DiscoveredTable) -> dict:
         """Build config dict for hashing."""
         profile_type = self.config.profile_defaults.profile_type
+        if profile_type == "SNAPSHOT":
+            granularities = None
+        else:
+            multi = self._resolve_setting(table, "granularities")
+            if multi:
+                granularities = sorted(multi)
+            else:
+                single = self._resolve_setting(table, "granularity")
+                granularities = [single] if single else None
+
         base_config = {
             "profile_type": profile_type,
             "output_schema_name": self.output_schema,
-            "granularity": (
-                None
-                if profile_type == "SNAPSHOT"
-                else self._resolve_setting(table, "granularity")
-            ),
+            "granularities": granularities,
             "slicing_exprs": self._resolve_setting(table, "slicing_exprs"),
-            "baseline_table_name": self._resolve_setting(table, "baseline_table_name"),
-            "custom_metrics": self._serialize_custom_metrics_from_config(),
+            "baseline_table_name": self._resolve_setting(
+                table, "baseline_table_name"
+            ),
+            "custom_metrics": self._serialize_resolved_custom_metrics(table),
         }
 
         if profile_type == "INFERENCE":
@@ -644,20 +695,37 @@ class ProfileProvisioner:
 
         return base_config
 
-    def _serialize_custom_metrics_from_config(self) -> List[Dict[str, Any]]:
-        """Serialize configured custom metrics for deterministic comparisons."""
-        serialized = []
-        for metric in self.config.profile_defaults.custom_metrics:
-            serialized.append(
-                {
-                    "name": metric.name,
-                    "metric_type": metric.metric_type,
-                    "input_columns": metric.input_columns,
-                    "definition": metric.definition,
-                    "output_type": metric.output_type,
-                }
-            )
-        return serialized
+    def _serialize_resolved_custom_metrics(self, table: DiscoveredTable) -> List[Dict[str, Any]]:
+        """Serialize resolved custom metrics (three-tier merge) for comparisons.
+
+        Args:
+            table: The discovered table to resolve metrics for.
+
+        Returns:
+            List of serialized metric dicts.
+        """
+        merged = {m.name: m for m in (self.config.profile_defaults.custom_metrics or [])}
+
+        table_config = self.config.monitored_tables.get(table.full_name)
+        if table_config and table_config.objective_function_ids:
+            for obj_id in table_config.objective_function_ids:
+                obj_func = self.config.objective_functions[obj_id]
+                merged[obj_func.metric.name] = obj_func.metric
+
+        if table_config and table_config.custom_metrics:
+            for m in table_config.custom_metrics:
+                merged[m.name] = m
+
+        return [
+            {
+                "name": metric.name,
+                "metric_type": metric.metric_type,
+                "input_columns": metric.input_columns,
+                "definition": metric.definition,
+                "output_type": metric.output_type,
+            }
+            for metric in merged.values()
+        ]
 
     def _normalize_granularity(self, granularity: Any) -> Optional[str]:
         """Normalize SDK granularity enum/string to config string."""
@@ -689,7 +757,7 @@ class ProfileProvisioner:
         existing = {
             "profile_type": profile_type,
             "output_schema_name": self.output_schema,
-            "granularity": None,
+            "granularities": None,
             "slicing_exprs": cfg.slicing_exprs or None,
             "baseline_table_name": cfg.baseline_table_name,
             "custom_metrics": [],
@@ -699,6 +767,7 @@ class ProfileProvisioner:
             metric_type_map = {
                 "DATA_PROFILING_CUSTOM_METRIC_TYPE_AGGREGATE": "aggregate",
                 "DATA_PROFILING_CUSTOM_METRIC_TYPE_DERIVED": "derived",
+                "DATA_PROFILING_CUSTOM_METRIC_TYPE_DRIFT": "drift",
             }
             existing["custom_metrics"] = [
                 {
@@ -716,23 +785,30 @@ class ProfileProvisioner:
         if profile_type == "INFERENCE" and cfg.inference_log:
             inference = cfg.inference_log
             existing["problem_type"] = (
-                inference.problem_type.value if inference.problem_type else None
+                inference.problem_type.value
+                if inference.problem_type else None
             )
             existing["prediction_column"] = inference.prediction_column
             existing["label_column"] = inference.label_column
             existing["timestamp_column"] = inference.timestamp_column
             existing["model_id_column"] = inference.model_id_column
             if inference.granularities:
-                existing["granularity"] = self._normalize_granularity(
-                    inference.granularities[0]
-                )
+                existing["granularities"] = sorted(
+                    g for g in (
+                        self._normalize_granularity(g)
+                        for g in inference.granularities
+                    ) if g
+                ) or None
         elif profile_type == "TIMESERIES" and cfg.time_series:
             series = cfg.time_series
             existing["timestamp_column"] = series.timestamp_column
             if series.granularities:
-                existing["granularity"] = self._normalize_granularity(
-                    series.granularities[0]
-                )
+                existing["granularities"] = sorted(
+                    g for g in (
+                        self._normalize_granularity(g)
+                        for g in series.granularities
+                    ) if g
+                ) or None
         return existing
 
     def _has_config_drift(self, existing_monitor: Monitor, table: DiscoveredTable) -> bool:

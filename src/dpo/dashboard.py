@@ -517,6 +517,107 @@ def _build_dashboard_template(
         }
     )
 
+    # --- Page 5: Model Performance ---
+    pages.append(
+        {
+            "name": "model_performance",
+            "displayName": "Model Performance",
+            "layout": [
+                {
+                    "widget": {
+                        "name": "perf_summary",
+                        "queries": [{
+                            "query": {
+                                "datasetName": "unified_performance",
+                                "fields": [
+                                    {"name": "models_monitored", "expression": "COUNT(DISTINCT `source_table_name`)"},
+                                    {"name": "models_with_labels", "expression": "COUNT(DISTINCT CASE WHEN `accuracy_score` IS NOT NULL OR `r2_score` IS NOT NULL THEN `source_table_name` END)"},
+                                ],
+                                "disaggregated": False,
+                            }
+                        }],
+                        "spec": {
+                            "type": "counter",
+                            "encodings": {"value": {"fieldName": "models_monitored", "displayName": "Models Monitored"}},
+                        },
+                    },
+                    "position": {"x": 0, "y": 0, "width": 2, "height": 1},
+                },
+                {
+                    "widget": {
+                        "name": "perf_trend",
+                        "queries": [{
+                            "query": {
+                                "datasetName": "unified_performance",
+                                "fields": [
+                                    {"name": "window_end", "expression": "`window_end`"},
+                                    {"name": "source_table_name", "expression": "`source_table_name`"},
+                                    {"name": "score", "expression": "COALESCE(`accuracy_score`, `r2_score`)"},
+                                ],
+                                "disaggregated": False,
+                            }
+                        }],
+                        "spec": {
+                            "type": "line",
+                            "encodings": {
+                                "x": {"fieldName": "window_end", "scale": {"type": "temporal"}},
+                                "y": {"fieldName": "score", "scale": {"type": "quantitative"}},
+                                "color": {"fieldName": "source_table_name"},
+                            },
+                        },
+                    },
+                    "position": {"x": 2, "y": 0, "width": 4, "height": 2},
+                },
+                {
+                    "widget": {
+                        "name": "perf_table",
+                        "queries": [{
+                            "query": {
+                                "datasetName": "unified_performance",
+                                "fields": [
+                                    {"name": "source_table_name", "expression": "`source_table_name`"},
+                                    {"name": "accuracy_score", "expression": "MAX(`accuracy_score`)"},
+                                    {"name": "r2_score", "expression": "MAX(`r2_score`)"},
+                                    {"name": "f1_weighted", "expression": "MAX(`f1_weighted`)"},
+                                    {"name": "precision_weighted", "expression": "MAX(`precision_weighted`)"},
+                                    {"name": "owner", "expression": "MAX(`owner`)"},
+                                ],
+                                "disaggregated": False,
+                            }
+                        }],
+                        "spec": {"type": "table", "title": "Model Performance Summary"},
+                    },
+                    "position": {"x": 0, "y": 2, "width": 6, "height": 3},
+                },
+                {
+                    "widget": {
+                        "name": "perf_vs_drift_scatter",
+                        "queries": [{
+                            "query": {
+                                "datasetName": "perf_vs_drift",
+                                "fields": [
+                                    {"name": "source_table_name", "expression": "`source_table_name`"},
+                                    {"name": "score", "expression": "COALESCE(`accuracy_score`, `r2_score`)"},
+                                    {"name": "max_js_divergence", "expression": "`max_js_divergence`"},
+                                ],
+                                "disaggregated": True,
+                            }
+                        }],
+                        "spec": {
+                            "type": "scatter",
+                            "encodings": {
+                                "x": {"fieldName": "max_js_divergence", "scale": {"type": "quantitative"}},
+                                "y": {"fieldName": "score", "scale": {"type": "quantitative"}},
+                                "color": {"fieldName": "source_table_name"},
+                            },
+                        },
+                    },
+                    "position": {"x": 0, "y": 5, "width": 6, "height": 3},
+                },
+            ],
+        }
+    )
+
     return {
         "displayName": "DPO Global Health Dashboard",
         "pages": pages,
@@ -551,6 +652,40 @@ def _build_dashboard_template(
                 "displayName": "Coverage Orphan Monitors",
                 "query": "{coverage_orphan_query}",
             },
+            {
+                "name": "unified_performance",
+                "displayName": "Unified Performance Metrics",
+                "query": "SELECT * FROM {unified_performance_view}",
+            },
+            {
+                "name": "perf_vs_drift",
+                "displayName": "Performance vs Drift",
+                "query": """
+                    WITH drift_summary AS (
+                        SELECT source_table_name, window_start, window_end, granularity,
+                            MAX(js_divergence) AS max_js_divergence,
+                            AVG(js_divergence) AS avg_js_divergence,
+                            COUNT(DISTINCT column_name) AS columns_drifted
+                        FROM {unified_drift_view}
+                        WHERE js_divergence IS NOT NULL
+                        GROUP BY source_table_name, window_start, window_end, granularity
+                    ),
+                    perf AS (
+                        SELECT source_table_name, window_start, window_end, granularity,
+                            accuracy_score, r2_score, precision_weighted, f1_weighted
+                        FROM {unified_performance_view}
+                    )
+                    SELECT p.source_table_name, p.window_start, p.window_end, p.granularity,
+                        p.accuracy_score, p.r2_score, p.precision_weighted, p.f1_weighted,
+                        d.max_js_divergence, d.avg_js_divergence, d.columns_drifted
+                    FROM perf p
+                    LEFT JOIN drift_summary d
+                        ON p.source_table_name = d.source_table_name
+                        AND p.window_start = d.window_start
+                        AND p.window_end = d.window_end
+                        AND p.granularity = d.granularity
+                """,
+            },
         ],
     }
 
@@ -577,21 +712,22 @@ class DashboardProvisioner:
         unified_drift_view: str,
         parent_path: str,
         unified_profile_view: Optional[str] = None,
+        unified_performance_view: Optional[str] = None,
         dashboard_name: Optional[str] = None,
         coverage_report: Optional[CoverageReport] = None,
     ) -> str:
-        """
-        Deploy Lakeview dashboard pointing to the unified views.
+        """Deploy Lakeview dashboard pointing to the unified views.
 
         Args:
-            unified_drift_view: Full name of unified drift metrics view
-            parent_path: Workspace path for dashboard (e.g., "/Workspace/Shared/DPO")
-            unified_profile_view: Full name of unified profile metrics view
-            dashboard_name: Optional custom dashboard name
-            coverage_report: Optional coverage governance report snapshot
+            unified_drift_view: Full name of unified drift metrics view.
+            parent_path: Workspace path for dashboard.
+            unified_profile_view: Full name of unified profile metrics view.
+            unified_performance_view: Full name of unified performance metrics view.
+            dashboard_name: Optional custom dashboard name.
+            coverage_report: Optional coverage governance report snapshot.
 
         Returns:
-            Dashboard ID
+            Dashboard ID.
         """
         name = dashboard_name or f"DPO Global Health - {self.catalog}"
 
@@ -604,24 +740,32 @@ class DashboardProvisioner:
         )
         template["displayName"] = name
 
-        # Inject actual view names into dataset queries
+        # Derive view names from the drift view when not provided
         profile_view = unified_profile_view or unified_drift_view.replace(
             "_drift", "_profile"
         )
+        perf_view = unified_performance_view or unified_drift_view.replace(
+            "_drift_metrics", "_performance_metrics"
+        )
+
+        # Inject actual view names into dataset queries
         coverage_queries = _build_coverage_queries(coverage_report)
         for dataset in template.get("datasets", []):
-            if dataset.get("name") == "unified_drift":
+            ds_name = dataset.get("name")
+            if ds_name == "unified_drift":
                 dataset["query"] = f"SELECT * FROM {unified_drift_view}"
-            elif dataset.get("name") == "unified_profile":
+            elif ds_name == "unified_profile":
                 dataset["query"] = f"SELECT * FROM {profile_view}"
-            elif dataset.get("name") == "coverage_summary":
-                dataset["query"] = coverage_queries["coverage_summary"]
-            elif dataset.get("name") == "coverage_unmonitored":
-                dataset["query"] = coverage_queries["coverage_unmonitored"]
-            elif dataset.get("name") == "coverage_stale":
-                dataset["query"] = coverage_queries["coverage_stale"]
-            elif dataset.get("name") == "coverage_orphans":
-                dataset["query"] = coverage_queries["coverage_orphans"]
+            elif ds_name == "unified_performance":
+                dataset["query"] = f"SELECT * FROM {perf_view}"
+            elif ds_name == "perf_vs_drift":
+                dataset["query"] = dataset["query"].replace(
+                    "{unified_drift_view}", unified_drift_view
+                ).replace(
+                    "{unified_performance_view}", perf_view
+                )
+            elif ds_name in coverage_queries:
+                dataset["query"] = coverage_queries[ds_name]
 
         logger.info(f"Deploying dashboard: {name} to {parent_path}")
 
@@ -677,6 +821,7 @@ class DashboardProvisioner:
         self,
         views_by_group: Dict[str, Tuple[str, str]],
         parent_path: str,
+        unified_performance_view: Optional[str] = None,
         coverage_report: Optional[CoverageReport] = None,
     ) -> Dict[str, str]:
         """Deploy a dashboard for each monitor group.
@@ -684,9 +829,11 @@ class DashboardProvisioner:
         Args:
             views_by_group: Dict mapping group_name -> (drift_view, profile_view).
             parent_path: Workspace path for dashboards.
+            unified_performance_view: Full name of unified performance view.
+            coverage_report: Optional coverage governance report snapshot.
 
         Returns:
-            Dict mapping group_name -> dashboard_id
+            Dict mapping group_name -> dashboard_id.
         """
         results = {}
         for group_name, (drift_view, profile_view) in views_by_group.items():
@@ -694,12 +841,158 @@ class DashboardProvisioner:
                 drift_view,
                 parent_path,
                 unified_profile_view=profile_view,
+                unified_performance_view=unified_performance_view,
                 dashboard_name=f"DPO Health - {group_name}",
                 coverage_report=coverage_report,
             )
             results[group_name] = dashboard_id
 
         return results
+
+    def deploy_executive_rollup(
+        self,
+        views_by_group: Dict[str, Tuple[str, str]],
+        parent_path: str,
+        coverage_report: Optional[CoverageReport] = None,
+    ) -> str:
+        """Deploy a single cross-group executive rollup dashboard.
+
+        Args:
+            views_by_group: Mapping of group name to (drift_view, profile_view) tuples.
+            parent_path: Workspace path for the dashboard.
+            coverage_report: Optional coverage data for summary counters.
+
+        Returns:
+            Dashboard ID.
+        """
+        # Build UNION ALL queries across all group drift views
+        def _sql_escape(val: str) -> str:
+            return val.replace("'", "''")
+
+        drift_union = " UNION ALL ".join(
+            f"SELECT *, '{_sql_escape(group)}' as monitor_group "
+            f"FROM {views[0]}"
+            for group, views in views_by_group.items()
+        )
+        profile_union = " UNION ALL ".join(
+            f"SELECT *, '{_sql_escape(group)}' as monitor_group "
+            f"FROM {views[1]}"
+            for group, views in views_by_group.items()
+        )
+
+        template = {
+            "displayName": "DPO Executive Rollup",
+            "pages": [
+                {
+                    "name": "executive_rollup",
+                    "displayName": "Executive Rollup",
+                    "layout": [
+                        {
+                            "widget": {
+                                "name": "group_summary",
+                                "queries": [{
+                                    "query": {
+                                        "datasetName": "rollup_drift",
+                                        "fields": [
+                                            {"name": "monitor_group", "expression": "`monitor_group`"},
+                                            {"name": "tables_monitored", "expression": "COUNT(DISTINCT `source_table_name`)"},
+                                            {"name": "critical_alerts", "expression": f"COUNT(CASE WHEN `js_divergence` >= {self.config.alerting.drift_threshold} THEN 1 END)"},
+                                        ],
+                                        "disaggregated": False,
+                                    }
+                                }],
+                                "spec": {"type": "table", "title": "Group Summary"},
+                            },
+                            "position": {"x": 0, "y": 0, "width": 6, "height": 2},
+                        },
+                        {
+                            "widget": {
+                                "name": "worst_drifters",
+                                "queries": [{
+                                    "query": {
+                                        "datasetName": "rollup_drift",
+                                        "fields": [
+                                            {"name": "source_table_name", "expression": "`source_table_name`"},
+                                            {"name": "monitor_group", "expression": "`monitor_group`"},
+                                            {"name": "max_drift", "expression": "MAX(`js_divergence`)"},
+                                        ],
+                                        "disaggregated": False,
+                                    }
+                                }],
+                                "spec": {"type": "table", "title": "Cross-Group Worst Drifters"},
+                            },
+                            "position": {"x": 0, "y": 2, "width": 6, "height": 3},
+                        },
+                        {
+                            "widget": {
+                                "name": "group_health",
+                                "queries": [{
+                                    "query": {
+                                        "datasetName": "rollup_drift",
+                                        "fields": [
+                                            {"name": "monitor_group", "expression": "`monitor_group`"},
+                                            {"name": "avg_drift", "expression": "AVG(`js_divergence`)"},
+                                        ],
+                                        "disaggregated": False,
+                                    }
+                                }],
+                                "spec": {
+                                    "type": "bar",
+                                    "encodings": {
+                                        "x": {"fieldName": "monitor_group", "scale": {"type": "ordinal"}},
+                                        "y": {"fieldName": "avg_drift", "scale": {"type": "quantitative"}},
+                                    },
+                                },
+                            },
+                            "position": {"x": 0, "y": 5, "width": 6, "height": 2},
+                        },
+                    ],
+                },
+            ],
+            "datasets": [
+                {
+                    "name": "rollup_drift",
+                    "displayName": "Cross-Group Drift",
+                    "query": drift_union,
+                },
+                {
+                    "name": "rollup_profile",
+                    "displayName": "Cross-Group Profile",
+                    "query": profile_union,
+                },
+            ],
+        }
+
+        name = "DPO Executive Rollup"
+
+        try:
+            existing = self._find_existing_dashboard(name, parent_path)
+
+            if existing:
+                logger.info(f"Updating existing rollup dashboard: {existing.dashboard_id}")
+                dashboard = self.w.lakeview.update(
+                    dashboard_id=existing.dashboard_id,
+                    dashboard=Dashboard(
+                        display_name=name,
+                        serialized_dashboard=json.dumps(template),
+                    ),
+                )
+            else:
+                dashboard = self.w.lakeview.create(
+                    dashboard=Dashboard(
+                        display_name=name,
+                        parent_path=parent_path,
+                        serialized_dashboard=json.dumps(template),
+                    ),
+                )
+
+            dashboard_id = dashboard.dashboard_id
+            logger.info(f"Executive rollup dashboard deployed: {dashboard_id}")
+            return dashboard_id
+
+        except Exception as e:
+            logger.error(f"Failed to deploy executive rollup dashboard: {e}")
+            raise
 
     def cleanup_stale_dashboards(
         self,
