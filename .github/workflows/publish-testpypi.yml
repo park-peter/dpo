@@ -1,0 +1,72 @@
+name: Publish TestPyPI
+
+on:
+  push:
+    tags:
+      - "v*rc*"
+      - "v*a*"
+      - "v*b*"
+
+jobs:
+  # Gate: run full CI before publishing
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write  # Required for Trusted Publishing (OIDC)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tagged commit is on main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" "origin/main"; then
+            echo "Tag commit ${GITHUB_SHA} is not on origin/main. Refusing publish." >&2
+            exit 1
+          fi
+          echo "Tag commit is on origin/main."
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag matches package version
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import sys
+          import tomllib
+
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          if tag != version:
+              print(f"Tag version mismatch: tag={tag}, package={version}", file=sys.stderr)
+              raise SystemExit(1)
+          print(f"Tag version matches package version: {version}")
+          PY
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Build and validate package
+        run: |
+          set -euo pipefail
+          rm -rf dist build
+          find . -maxdepth 2 -type d -name "*.egg-info" -prune -exec rm -rf {} +
+          uvx --from build pyproject-build --sdist --wheel --outdir dist
+          test -n "$(ls -A dist/)"
+          uvx --from twine twine check dist/*
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

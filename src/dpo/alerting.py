@@ -1,5 +1,4 @@
-"""
-Phase 4: Observability and Alerting
+"""Observability and Alerting.
 
 Provisions SQL Alerts for drift detection and data quality issues.
 Supports per-group notification routing via email or notification destination.
@@ -172,6 +171,19 @@ class AlertProvisioner:
 
         return results
 
+    def _drift_threshold_expressions(self) -> Tuple[str, str]:
+        """Build SQL expressions for critical and warning drift thresholds.
+
+        Warning threshold is clamped to never exceed the critical threshold.
+        This prevents suppressing rows when per-table critical thresholds are low.
+        """
+        default_threshold = self.config.alerting.drift_threshold
+        critical_threshold = f"COALESCE(drift_threshold, {default_threshold})"
+        warning_threshold = (
+            f"LEAST({critical_threshold}, GREATEST(0.1, {critical_threshold} / 2.0))"
+        )
+        return critical_threshold, warning_threshold
+
     def create_unified_drift_alert(
         self,
         unified_drift_view: str,
@@ -180,6 +192,9 @@ class AlertProvisioner:
         notifications: Optional[List[str]] = None,
     ) -> str:
         """Create ONE alert that monitors tables via the unified drift view.
+
+        Alert payloads include enrichment context (owner, runbook, lineage)
+        so recipients have actionability from the first notification.
 
         Args:
             unified_drift_view: The unified drift metrics view name.
@@ -190,8 +205,7 @@ class AlertProvisioner:
         Returns:
             The alert ID.
         """
-        threshold = self.config.alerting.drift_threshold
-        warning_threshold = max(0.1, threshold / 2)
+        effective_threshold, warning_lower_bound = self._drift_threshold_expressions()
 
         alert_name = f"[DPO] Drift Alert - {catalog}{alert_suffix}"
         query_sql = f"""
@@ -203,14 +217,18 @@ class AlertProvisioner:
             js_divergence,
             chi_square_statistic,
             drift_type,
+            drift_threshold,
             CASE
-                WHEN js_divergence >= {threshold} THEN 'CRITICAL'
-                WHEN js_divergence >= {warning_threshold} THEN 'WARNING'
+                WHEN js_divergence >= {effective_threshold} THEN 'CRITICAL'
+                WHEN js_divergence >= {warning_lower_bound} THEN 'WARNING'
             END as severity,
+            CAST(1 AS DOUBLE) as trigger_value,
+            runbook_url,
+            lineage_url,
             window_start,
             window_end
         FROM {unified_drift_view}
-        WHERE js_divergence >= {warning_threshold}
+        WHERE js_divergence >= {warning_lower_bound}
         ORDER BY js_divergence DESC
         LIMIT 100
         """
@@ -225,9 +243,9 @@ class AlertProvisioner:
             alert = self._create_or_update_alert(
                 name=alert_name,
                 query_sql=query_sql,
-                column="js_divergence",
+                column="trigger_value",
                 op=">=",
-                value=str(warning_threshold),
+                value="1",
                 notifications=notification_list,
             )
 
@@ -294,6 +312,8 @@ class AlertProvisioner:
                 WHEN record_count < {row_min or 0} THEN 'LOW_ROW_COUNT'
                 WHEN distinct_count < {distinct_min or 0} THEN 'LOW_CARDINALITY'
             END as issue_type,
+            runbook_url,
+            lineage_url,
             window_start,
             window_end
         FROM {unified_profile_view}
@@ -476,8 +496,7 @@ ORDER BY js_divergence DESC;
         Returns:
             Dict with query names and SQL.
         """
-        threshold = self.config.alerting.drift_threshold
-        warning_threshold = max(0.1, threshold / 2)
+        effective_threshold, warning_lower_bound = self._drift_threshold_expressions()
 
         return {
             f"[DPO] Warning Query - {catalog}": f"""
@@ -487,8 +506,8 @@ ORDER BY js_divergence DESC;
                     js_divergence,
                     'WARNING' as severity
                 FROM {unified_view}
-                WHERE js_divergence >= {warning_threshold}
-                  AND js_divergence < {threshold}
+                WHERE js_divergence >= {warning_lower_bound}
+                  AND js_divergence < {effective_threshold}
                 ORDER BY js_divergence DESC
             """,
             f"[DPO] Critical Query - {catalog}": f"""
@@ -498,7 +517,7 @@ ORDER BY js_divergence DESC;
                     js_divergence,
                     'CRITICAL' as severity
                 FROM {unified_view}
-                WHERE js_divergence >= {threshold}
+                WHERE js_divergence >= {effective_threshold}
                 ORDER BY js_divergence DESC
             """,
         }
@@ -512,16 +531,15 @@ ORDER BY js_divergence DESC;
         Returns:
             SQL query for alert status summary.
         """
-        threshold = self.config.alerting.drift_threshold
-        warning_threshold = max(0.1, threshold / 2)
+        effective_threshold, warning_lower_bound = self._drift_threshold_expressions()
 
         return f"""
         SELECT
             source_table_name,
             department,
             owner,
-            COUNT(CASE WHEN js_divergence >= {threshold} THEN 1 END) as critical_count,
-            COUNT(CASE WHEN js_divergence >= {warning_threshold} AND js_divergence < {threshold} THEN 1 END) as warning_count,
+            COUNT(CASE WHEN js_divergence >= {effective_threshold} THEN 1 END) as critical_count,
+            COUNT(CASE WHEN js_divergence >= {warning_lower_bound} AND js_divergence < {effective_threshold} THEN 1 END) as warning_count,
             MAX(js_divergence) as max_drift,
             MAX(window_end) as last_check
         FROM {unified_view}

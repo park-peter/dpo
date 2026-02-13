@@ -6,14 +6,16 @@ Automate Databricks Data Profiling at scale across Unity Catalog.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from dpo.aggregator import MetricsAggregator
 from dpo.alerting import AlertProvisioner
 from dpo.config import OrchestratorConfig, load_config
+from dpo.coverage import CoverageAnalyzer, CoverageReport
 from dpo.dashboard import DashboardProvisioner
 from dpo.discovery import DiscoveredTable, TableDiscovery
 from dpo.provisioning import (
+    ImpactReport,
     MonitorStatus,
     ProfileProvisioner,
     ProvisioningResult,
@@ -29,7 +31,7 @@ from dpo.utils import (
     verify_view_permissions,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ __all__ = [
     "DiscoveredTable",
     "ProfileProvisioner",
     "ProvisioningResult",
+    "ImpactReport",
     "RefreshResult",
     "MonitorStatus",
     "get_monitor_statuses",
@@ -48,6 +51,8 @@ __all__ = [
     "MetricsAggregator",
     "AlertProvisioner",
     "DashboardProvisioner",
+    "CoverageAnalyzer",
+    "CoverageReport",
     "verify_output_schema_permissions",
     "verify_view_permissions",
     "hash_config",
@@ -73,25 +78,41 @@ class OrchestrationReport:
     monitors_failed: int
     orphans_cleaned: int
     # Group-aware fields (empty dict for bulk mode)
-    # Key = group name (e.g., "ml_team", "data_eng", "default")
     unified_drift_views: Dict[str, str] = field(default_factory=dict)
     unified_profile_views: Dict[str, str] = field(default_factory=dict)
     drift_alert_ids: Dict[str, str] = field(default_factory=dict)
     quality_alert_ids: Dict[str, str] = field(default_factory=dict)
     dashboard_ids: Dict[str, str] = field(default_factory=dict)
     monitor_statuses: List[MonitorStatus] = field(default_factory=list)
+    # Dry-run structured report
+    impact_report: Optional[ImpactReport] = None
+    # Coverage report
+    coverage_report: Optional[CoverageReport] = None
+
+    def to_dict(self) -> dict:
+        """Serialize report for JSON output."""
+        data = {
+            "tables_discovered": self.tables_discovered,
+            "monitors_created": self.monitors_created,
+            "monitors_updated": self.monitors_updated,
+            "monitors_skipped": self.monitors_skipped,
+            "monitors_failed": self.monitors_failed,
+            "orphans_cleaned": self.orphans_cleaned,
+            "unified_drift_views": self.unified_drift_views,
+            "unified_profile_views": self.unified_profile_views,
+            "drift_alert_ids": self.drift_alert_ids,
+            "quality_alert_ids": self.quality_alert_ids,
+            "dashboard_ids": self.dashboard_ids,
+        }
+        if self.impact_report:
+            data["impact"] = self.impact_report.to_dict()
+        if self.coverage_report:
+            data["coverage"] = self.coverage_report.to_dict()
+        return data
 
 
 def _create_table_from_config(w, table_name: str) -> DiscoveredTable:
-    """Create a DiscoveredTable from a monitored_tables entry.
-
-    Args:
-        w: Databricks WorkspaceClient.
-        table_name: Full table name (catalog.schema.table).
-
-    Returns:
-        DiscoveredTable with column info fetched from Unity Catalog.
-    """
+    """Create a DiscoveredTable from a monitored_tables entry."""
     table_info = w.tables.get(full_name=table_name)
 
     tags = {}
@@ -116,21 +137,12 @@ def _create_table_from_config(w, table_name: str) -> DiscoveredTable:
 def _build_table_list(w, config: OrchestratorConfig) -> List[DiscoveredTable]:
     """Build the list of tables to process with YAML precedence.
 
-    Precedence: monitored_tables (YAML) wins over tag discovery.
-    If a table is both discovered via tags AND in monitored_tables,
-    only the YAML config version is used.
-
-    Args:
-        w: Databricks WorkspaceClient.
-        config: Orchestrator configuration.
-
-    Returns:
-        List of DiscoveredTable objects to process.
+    Resolves enrichment metadata for each table after building.
     """
     tables = []
     yaml_table_names = set(config.monitored_tables.keys())
 
-    # 1. If include_tagged_tables, discover via tags (excluding YAML tables)
+    # 1. Tag-discovered tables (excluding YAML overrides)
     if config.include_tagged_tables and config.discovery:
         discovery = TableDiscovery(w, config.discovery, config.catalog_name)
         for table in discovery.discover():
@@ -141,9 +153,14 @@ def _build_table_list(w, config: OrchestratorConfig) -> List[DiscoveredTable]:
                     f"Skipping tag-discovered {table.full_name} - YAML config takes precedence"
                 )
 
-    # 2. Add ALL tables from monitored_tables (authoritative)
+    # 2. All tables from monitored_tables (authoritative)
     for table_name in config.monitored_tables.keys():
         tables.append(_create_table_from_config(w, table_name))
+
+    # 3. Resolve enrichment metadata for all tables
+    for table in tables:
+        table_config = config.monitored_tables.get(table.full_name)
+        table.resolve_enrichment(table_config)
 
     logger.info(f"Built table list: {len(tables)} tables to process")
     return tables
@@ -163,23 +180,12 @@ def _successful_tables(
 
 
 def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
-    """Simplified mode: Provision monitors only.
-
-    Skips aggregation, alerting, and dashboard deployment.
-    Use this for fastest onboarding when unified observability is not needed.
-
-    Args:
-        config: Validated orchestrator configuration.
-
-    Returns:
-        OrchestrationReport with execution summary (Dict fields empty).
-    """
+    """Simplified mode: Provision monitors only."""
     from databricks.sdk import WorkspaceClient
 
     w = WorkspaceClient()
     catalog = config.catalog_name
 
-    # 1. Pre-flight permission check (CREATE TABLE only, not VIEW)
     verify_output_schema_permissions(
         w=w,
         catalog=catalog,
@@ -188,19 +194,16 @@ def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
         mode="bulk_provision_only",
     )
 
-    # 2. Build table list (handles both discovery and monitored_tables)
     tables = _build_table_list(w, config)
-
-    # 3. Provisioning
     provisioner = ProfileProvisioner(w, config)
+    impact_report = None
     if config.dry_run:
-        results = provisioner.dry_run_all(tables)
+        results, impact_report = provisioner.dry_run_all(tables)
     else:
         results = provisioner.provision_all(tables)
 
     healthy_tables = _successful_tables(tables, results)
 
-    # 4. Wait for monitors to become ACTIVE
     monitor_statuses = []
     if config.wait_for_monitors and not config.dry_run and healthy_tables:
         monitor_statuses = wait_for_monitors(
@@ -212,12 +215,16 @@ def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
     elif config.wait_for_monitors and not config.dry_run:
         logger.warning("No successfully provisioned monitors; skipping status wait")
 
-    # 5. Orphan cleanup
     orphans = []
     if config.cleanup_orphans and not config.dry_run:
         orphans = provisioner.cleanup_orphans(tables)
 
-    # 6. Return report
+    coverage_report = None
+    try:
+        coverage_report = CoverageAnalyzer(w, config).analyze(tables)
+    except Exception as e:
+        logger.warning("Coverage analysis failed (continuing): %s", e)
+
     return OrchestrationReport(
         tables_discovered=len(tables),
         monitors_created=sum(1 for r in results if r.action == "created"),
@@ -226,6 +233,8 @@ def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
         monitors_failed=sum(1 for r in results if r.action == "failed"),
         orphans_cleaned=len(orphans),
         monitor_statuses=monitor_statuses,
+        impact_report=impact_report,
+        coverage_report=coverage_report,
     )
 
 
@@ -235,18 +244,10 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
     Executes the full pipeline based on config.mode:
     - bulk_provision_only: Discovery + Provisioning + Cleanup only
     - full: Complete pipeline with per-group aggregation/alerting/dashboards
-
-    Args:
-        config: Validated orchestrator configuration.
-
-    Returns:
-        OrchestrationReport with execution summary.
     """
-    # Dispatch to bulk mode if specified
     if config.mode == "bulk_provision_only":
         return run_bulk_provisioning(config)
 
-    # Full mode with group support
     from databricks.sdk import WorkspaceClient
 
     w = WorkspaceClient()
@@ -254,7 +255,6 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
     output_schema = f"{catalog}.global_monitoring"
 
     # 1. Pre-flight permission checks
-    # Output schema: monitor metric tables
     verify_output_schema_permissions(
         w=w,
         catalog=catalog,
@@ -262,7 +262,6 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
         warehouse_id=config.warehouse_id,
         mode="bulk_provision_only",
     )
-    # Global schema: unified views for full mode
     verify_view_permissions(
         w=w,
         catalog=catalog,
@@ -270,20 +269,20 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
         warehouse_id=config.warehouse_id,
     )
 
-    # 2. Build table list (handles both discovery and monitored_tables)
+    # 2. Build table list (handles discovery + monitored_tables + enrichment)
     tables = _build_table_list(w, config)
-
     # 3. Provisioning
     provisioner = ProfileProvisioner(w, config)
+    impact_report = None
 
     if config.dry_run:
-        results = provisioner.dry_run_all(tables)
+        results, impact_report = provisioner.dry_run_all(tables)
     else:
         results = provisioner.provision_all(tables)
 
     healthy_tables = _successful_tables(tables, results)
 
-    # 4. Wait for monitors to become ACTIVE
+    # 4. Wait for monitors
     monitor_statuses = []
     if config.wait_for_monitors and not config.dry_run and healthy_tables:
         monitor_statuses = wait_for_monitors(
@@ -293,14 +292,20 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
             poll_interval=config.wait_poll_interval,
         )
     elif config.wait_for_monitors and not config.dry_run:
-        logger.warning("No successfully provisioned monitors; skipping status wait")
+        logger.warning("No healthy tables available; skipping aggregation/alerting/dashboard steps")
 
     # 5. Orphan cleanup
     orphans = []
     if config.cleanup_orphans and not config.dry_run:
         orphans = provisioner.cleanup_orphans(tables)
 
-    # 6. Aggregation - per group
+    coverage_report = None
+    try:
+        coverage_report = CoverageAnalyzer(w, config).analyze(tables)
+    except Exception as e:
+        logger.warning("Coverage analysis failed (continuing): %s", e)
+
+    # 6. Aggregation
     aggregator = MetricsAggregator(w, config)
     views_by_group = {}
 
@@ -311,29 +316,24 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
             config.monitor_group_tag,
         )
 
-        # 6b. Cleanup stale views from renamed/deleted groups
         active_sanitized_groups = {
             sanitize_sql_identifier(g) for g in views_by_group.keys()
         }
         aggregator.cleanup_stale_views(output_schema, active_sanitized_groups)
-    elif not config.dry_run:
-        logger.warning("No healthy tables available; skipping aggregation/alerting/dashboard steps")
 
-    # 7. Alerting - per group
+    # 7. Alerting
     alerts_by_group = {}
-    if config.alerting.enable_aggregated_alerts and not config.dry_run:
+    if config.alerting.enable_aggregated_alerts and not config.dry_run and views_by_group:
         alerter = AlertProvisioner(w, config)
         alerts_by_group = alerter.create_alerts_by_group(views_by_group, catalog)
 
-    # 8. Aggregated Dashboard - per group
+    # 8. Dashboards
     dashboards_by_group = {}
-    if config.deploy_aggregated_dashboard and not config.dry_run:
+    if config.deploy_aggregated_dashboard and not config.dry_run and views_by_group:
         dashboard_provisioner = DashboardProvisioner(w, config)
         dashboards_by_group = dashboard_provisioner.deploy_dashboards_by_group(
-            views_by_group, config.dashboard_parent_path
+            views_by_group, config.dashboard_parent_path, coverage_report=coverage_report
         )
-
-        # 8b. Cleanup stale dashboards from renamed/deleted groups
         active_group_names = set(views_by_group.keys())
         dashboard_provisioner.cleanup_stale_dashboards(
             config.dashboard_parent_path, active_group_names
@@ -352,4 +352,6 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
         quality_alert_ids={g: a[1] for g, a in alerts_by_group.items() if a[1]},
         dashboard_ids=dashboards_by_group,
         monitor_statuses=monitor_statuses,
+        impact_report=impact_report,
+        coverage_report=coverage_report,
     )

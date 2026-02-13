@@ -1,5 +1,4 @@
-"""
-Phase 5: Dashboard Provisioning
+"""Dashboard Provisioning.
 
 Auto-deploys Lakeview dashboard for global health visibility.
 Supports per-group dashboard deployment and cleanup.
@@ -13,13 +12,110 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.dashboards import Dashboard
 
 from dpo.config import OrchestratorConfig
+from dpo.coverage import CoverageReport
 
 logger = logging.getLogger(__name__)
 
 
+def _sql_value(value: Optional[object]) -> str:
+    """Return a SQL literal for VALUES clauses."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _build_coverage_queries(coverage_report: Optional[CoverageReport]) -> Dict[str, str]:
+    """Build SQL queries for coverage dashboard datasets."""
+    report = coverage_report or CoverageReport()
+    snapshot_timestamp = _sql_value(report.timestamp or None)
+
+    summary_query = f"""
+        SELECT
+            {snapshot_timestamp} AS snapshot_timestamp_utc,
+            {report.total_catalog_tables} AS total_catalog_tables,
+            {report.total_monitored} AS total_monitored,
+            {len(report.unmonitored)} AS unmonitored_tables,
+            {len(report.stale)} AS stale_monitors,
+            {len(report.orphans)} AS orphan_monitors
+    """
+
+    def values_or_empty(
+        rows: List[Tuple[Optional[object], ...]],
+        columns: List[str],
+        empty_select: str,
+    ) -> str:
+        if not rows:
+            return empty_select
+        values_sql = ", ".join(
+            "(" + ", ".join(_sql_value(v) for v in row) + ")"
+            for row in rows
+        )
+        return f"SELECT * FROM VALUES {values_sql} AS t({', '.join(columns)})"
+
+    unmonitored_rows = [
+        (u.full_name, u.schema_name, u.owner, u.reason)
+        for u in report.unmonitored
+    ]
+    unmonitored_query = values_or_empty(
+        unmonitored_rows,
+        ["source_table_name", "schema_name", "owner", "reason"],
+        """
+        SELECT
+            CAST(NULL AS STRING) AS source_table_name,
+            CAST(NULL AS STRING) AS schema_name,
+            CAST(NULL AS STRING) AS owner,
+            CAST(NULL AS STRING) AS reason
+        WHERE 1=0
+        """,
+    )
+
+    stale_rows = [
+        (s.table_name, s.monitor_id, s.days_since_refresh, s.status)
+        for s in report.stale
+    ]
+    stale_query = values_or_empty(
+        stale_rows,
+        ["source_table_name", "monitor_id", "days_since_refresh", "status"],
+        """
+        SELECT
+            CAST(NULL AS STRING) AS source_table_name,
+            CAST(NULL AS STRING) AS monitor_id,
+            CAST(NULL AS INT) AS days_since_refresh,
+            CAST(NULL AS STRING) AS status
+        WHERE 1=0
+        """,
+    )
+
+    orphan_rows = [
+        (o.table_name, o.monitor_id, o.reason)
+        for o in report.orphans
+    ]
+    orphan_query = values_or_empty(
+        orphan_rows,
+        ["source_table_name", "monitor_id", "reason"],
+        """
+        SELECT
+            CAST(NULL AS STRING) AS source_table_name,
+            CAST(NULL AS STRING) AS monitor_id,
+            CAST(NULL AS STRING) AS reason
+        WHERE 1=0
+        """,
+    )
+
+    return {
+        "coverage_summary": summary_query,
+        "coverage_unmonitored": unmonitored_query,
+        "coverage_stale": stale_query,
+        "coverage_orphans": orphan_query,
+    }
+
+
 def _build_dashboard_template(
     drift_threshold: float,
-    warning_threshold: float,
     null_rate_threshold: Optional[float],
     row_count_min: Optional[int],
 ) -> dict:
@@ -27,7 +123,6 @@ def _build_dashboard_template(
 
     Args:
         drift_threshold: JS divergence threshold for CRITICAL alerts.
-        warning_threshold: JS divergence threshold for WARNING alerts.
         null_rate_threshold: Null rate threshold for data quality panels.
         row_count_min: Minimum row count threshold for data quality panels.
     """
@@ -46,8 +141,19 @@ def _build_dashboard_template(
                                     "datasetName": "unified_drift",
                                     "fields": [
                                         {"name": "total_tables", "expression": "COUNT(DISTINCT `source_table_name`)"},
-                                        {"name": "critical_alerts", "expression": f"COUNT(CASE WHEN `js_divergence` >= {drift_threshold} THEN 1 END)"},
-                                        {"name": "warning_alerts", "expression": f"COUNT(CASE WHEN `js_divergence` >= {warning_threshold} AND `js_divergence` < {drift_threshold} THEN 1 END)"},
+                                        {
+                                            "name": "critical_alerts",
+                                            "expression": (
+                                                f"COUNT(CASE WHEN `js_divergence` >= COALESCE(`drift_threshold`, {drift_threshold}) THEN 1 END)"
+                                            ),
+                                        },
+                                        {
+                                            "name": "warning_alerts",
+                                            "expression": (
+                                                f"COUNT(CASE WHEN `js_divergence` >= LEAST(COALESCE(`drift_threshold`, {drift_threshold}), GREATEST(0.1, COALESCE(`drift_threshold`, {drift_threshold}) / 2.0)) "
+                                                f"AND `js_divergence` < COALESCE(`drift_threshold`, {drift_threshold}) THEN 1 END)"
+                                            ),
+                                        },
                                     ],
                                     "disaggregated": False,
                                 }
@@ -316,6 +422,101 @@ def _build_dashboard_template(
         },
     ]
 
+    # --- Page 4: Coverage Governance ---
+    pages.append(
+        {
+            "name": "coverage",
+            "displayName": "Coverage Governance",
+            "layout": [
+                {
+                    "widget": {
+                        "name": "coverage_summary",
+                        "queries": [
+                            {
+                                "query": {
+                                    "datasetName": "coverage_summary",
+                                    "fields": [
+                                        {"name": "snapshot_timestamp_utc", "expression": "`snapshot_timestamp_utc`"},
+                                        {"name": "total_catalog_tables", "expression": "`total_catalog_tables`"},
+                                        {"name": "total_monitored", "expression": "`total_monitored`"},
+                                        {"name": "unmonitored_tables", "expression": "`unmonitored_tables`"},
+                                        {"name": "stale_monitors", "expression": "`stale_monitors`"},
+                                        {"name": "orphan_monitors", "expression": "`orphan_monitors`"},
+                                    ],
+                                    "disaggregated": True,
+                                }
+                            }
+                        ],
+                        "spec": {"type": "table", "title": "Coverage Summary"},
+                    },
+                    "position": {"x": 0, "y": 0, "width": 6, "height": 1},
+                },
+                {
+                    "widget": {
+                        "name": "unmonitored_tables",
+                        "queries": [
+                            {
+                                "query": {
+                                    "datasetName": "coverage_unmonitored",
+                                    "fields": [
+                                        {"name": "source_table_name", "expression": "`source_table_name`"},
+                                        {"name": "schema_name", "expression": "`schema_name`"},
+                                        {"name": "owner", "expression": "`owner`"},
+                                        {"name": "reason", "expression": "`reason`"},
+                                    ],
+                                    "disaggregated": True,
+                                }
+                            }
+                        ],
+                        "spec": {"type": "table", "title": "Unmonitored Tables"},
+                    },
+                    "position": {"x": 0, "y": 1, "width": 6, "height": 2},
+                },
+                {
+                    "widget": {
+                        "name": "stale_monitors",
+                        "queries": [
+                            {
+                                "query": {
+                                    "datasetName": "coverage_stale",
+                                    "fields": [
+                                        {"name": "source_table_name", "expression": "`source_table_name`"},
+                                        {"name": "monitor_id", "expression": "`monitor_id`"},
+                                        {"name": "days_since_refresh", "expression": "`days_since_refresh`"},
+                                        {"name": "status", "expression": "`status`"},
+                                    ],
+                                    "disaggregated": True,
+                                }
+                            }
+                        ],
+                        "spec": {"type": "table", "title": "Stale Monitors"},
+                    },
+                    "position": {"x": 0, "y": 3, "width": 6, "height": 2},
+                },
+                {
+                    "widget": {
+                        "name": "orphan_monitors",
+                        "queries": [
+                            {
+                                "query": {
+                                    "datasetName": "coverage_orphans",
+                                    "fields": [
+                                        {"name": "source_table_name", "expression": "`source_table_name`"},
+                                        {"name": "monitor_id", "expression": "`monitor_id`"},
+                                        {"name": "reason", "expression": "`reason`"},
+                                    ],
+                                    "disaggregated": True,
+                                }
+                            }
+                        ],
+                        "spec": {"type": "table", "title": "Orphan Monitors"},
+                    },
+                    "position": {"x": 0, "y": 5, "width": 6, "height": 2},
+                },
+            ],
+        }
+    )
+
     return {
         "displayName": "DPO Global Health Dashboard",
         "pages": pages,
@@ -329,6 +530,26 @@ def _build_dashboard_template(
                 "name": "unified_profile",
                 "displayName": "Unified Profile Metrics",
                 "query": "SELECT * FROM {unified_profile_view}",
+            },
+            {
+                "name": "coverage_summary",
+                "displayName": "Coverage Summary",
+                "query": "{coverage_summary_query}",
+            },
+            {
+                "name": "coverage_unmonitored",
+                "displayName": "Coverage Unmonitored",
+                "query": "{coverage_unmonitored_query}",
+            },
+            {
+                "name": "coverage_stale",
+                "displayName": "Coverage Stale Monitors",
+                "query": "{coverage_stale_query}",
+            },
+            {
+                "name": "coverage_orphans",
+                "displayName": "Coverage Orphan Monitors",
+                "query": "{coverage_orphan_query}",
             },
         ],
     }
@@ -357,6 +578,7 @@ class DashboardProvisioner:
         parent_path: str,
         unified_profile_view: Optional[str] = None,
         dashboard_name: Optional[str] = None,
+        coverage_report: Optional[CoverageReport] = None,
     ) -> str:
         """
         Deploy Lakeview dashboard pointing to the unified views.
@@ -366,6 +588,7 @@ class DashboardProvisioner:
             parent_path: Workspace path for dashboard (e.g., "/Workspace/Shared/DPO")
             unified_profile_view: Full name of unified profile metrics view
             dashboard_name: Optional custom dashboard name
+            coverage_report: Optional coverage governance report snapshot
 
         Returns:
             Dashboard ID
@@ -373,11 +596,9 @@ class DashboardProvisioner:
         name = dashboard_name or f"DPO Global Health - {self.catalog}"
 
         threshold = self.config.alerting.drift_threshold
-        warning_threshold = max(0.1, threshold / 2)
 
         template = _build_dashboard_template(
             drift_threshold=threshold,
-            warning_threshold=warning_threshold,
             null_rate_threshold=self.config.alerting.null_rate_threshold,
             row_count_min=self.config.alerting.row_count_min,
         )
@@ -387,11 +608,20 @@ class DashboardProvisioner:
         profile_view = unified_profile_view or unified_drift_view.replace(
             "_drift", "_profile"
         )
+        coverage_queries = _build_coverage_queries(coverage_report)
         for dataset in template.get("datasets", []):
             if dataset.get("name") == "unified_drift":
                 dataset["query"] = f"SELECT * FROM {unified_drift_view}"
             elif dataset.get("name") == "unified_profile":
                 dataset["query"] = f"SELECT * FROM {profile_view}"
+            elif dataset.get("name") == "coverage_summary":
+                dataset["query"] = coverage_queries["coverage_summary"]
+            elif dataset.get("name") == "coverage_unmonitored":
+                dataset["query"] = coverage_queries["coverage_unmonitored"]
+            elif dataset.get("name") == "coverage_stale":
+                dataset["query"] = coverage_queries["coverage_stale"]
+            elif dataset.get("name") == "coverage_orphans":
+                dataset["query"] = coverage_queries["coverage_orphans"]
 
         logger.info(f"Deploying dashboard: {name} to {parent_path}")
 
@@ -447,6 +677,7 @@ class DashboardProvisioner:
         self,
         views_by_group: Dict[str, Tuple[str, str]],
         parent_path: str,
+        coverage_report: Optional[CoverageReport] = None,
     ) -> Dict[str, str]:
         """Deploy a dashboard for each monitor group.
 
@@ -464,6 +695,7 @@ class DashboardProvisioner:
                 parent_path,
                 unified_profile_view=profile_view,
                 dashboard_name=f"DPO Health - {group_name}",
+                coverage_report=coverage_report,
             )
             results[group_name] = dashboard_id
 
@@ -479,6 +711,9 @@ class DashboardProvisioner:
         Scenario: User renames monitor_group "marketing" to "growth".
         Result: "DPO Health - marketing" dashboard becomes stale.
 
+        Safety: Skips cleanup when active_group_names is empty to prevent
+        accidental deletion of all dashboards during transient failures.
+
         Args:
             parent_path: Folder path containing DPO dashboards.
             active_group_names: Set of currently active group names (original, not sanitized).
@@ -488,6 +723,10 @@ class DashboardProvisioner:
         """
         deleted = []
         dpo_prefix = "DPO Health - "
+
+        if not active_group_names:
+            logger.warning("No active groups; skipping dashboard cleanup to prevent accidental deletion")
+            return deleted
 
         try:
             dashboards = self.w.lakeview.list(path=parent_path)

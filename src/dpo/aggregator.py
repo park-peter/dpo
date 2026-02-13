@@ -1,5 +1,4 @@
-"""
-Phase 3: Unified Metrics Aggregator
+"""Unified Metrics Aggregator.
 
 Creates unified views across all profile_metrics and drift_metrics tables
 for centralized observability. Supports per-group aggregation.
@@ -70,6 +69,29 @@ class MetricsAggregator:
         self.catalog = config.catalog_name
         self.output_schema = config.profile_defaults.output_schema_name
         self.warehouse_id = config.warehouse_id
+
+    @staticmethod
+    def _sql_literal(value: Optional[str]) -> str:
+        """Return a safely-escaped SQL string literal."""
+        if value is None:
+            return "NULL"
+        escaped = str(value).replace("'", "''")
+        return f"'{escaped}'"
+
+    @staticmethod
+    def _safe_priority(value: Optional[str]) -> int:
+        """Parse priority tag into an integer, falling back safely."""
+        try:
+            return int(value) if value is not None else 99
+        except (TypeError, ValueError):
+            return 99
+
+    def _resolve_drift_threshold(self, table: DiscoveredTable) -> float:
+        """Resolve drift threshold for a table with config override support."""
+        table_cfg = self.config.monitored_tables.get(table.full_name)
+        if table_cfg and table_cfg.drift_threshold is not None:
+            return table_cfg.drift_threshold
+        return self.config.alerting.drift_threshold
 
     def create_unified_drift_view(
         self,
@@ -173,15 +195,18 @@ class MetricsAggregator:
         output_view: str,
         use_materialized: bool,
     ) -> str:
-        """Generate DDL for unified drift metrics view."""
+        """Generate DDL for unified drift metrics view with enrichment metadata."""
         view_type = "MATERIALIZED VIEW" if use_materialized else "VIEW"
         columns_sql = ", ".join(self.STANDARD_DRIFT_COLUMNS)
 
         union_parts = []
         for table in discovered_tables:
-            owner = table.tags.get("owner", "unknown")
+            owner = table.owner or table.tags.get("owner", "unknown")
             department = table.tags.get("department", "unknown")
-            priority = table.tags.get("monitor_priority", "99")
+            priority = self._safe_priority(table.tags.get("monitor_priority", "99"))
+            runbook_url = table.runbook_url or ""
+            lineage_url = table.lineage_url or ""
+            drift_threshold = self._resolve_drift_threshold(table)
 
             drift_table = (
                 f"{self.catalog}.{self.output_schema}.{table.table_name}_drift_metrics"
@@ -190,10 +215,13 @@ class MetricsAggregator:
             union_parts.append(f"""
                 SELECT
                     {columns_sql},
-                    '{table.full_name}' as source_table_name,
-                    '{owner}' as owner,
-                    '{department}' as department,
-                    {priority} as priority
+                    {self._sql_literal(table.full_name)} as source_table_name,
+                    {self._sql_literal(owner)} as owner,
+                    {self._sql_literal(department)} as department,
+                    {priority} as priority,
+                    {self._sql_literal(runbook_url)} as runbook_url,
+                    {self._sql_literal(lineage_url)} as lineage_url,
+                    CAST({drift_threshold} AS DOUBLE) as drift_threshold
                 FROM {drift_table}
             """)
 
@@ -214,7 +242,10 @@ class MetricsAggregator:
                 CAST(NULL AS STRING) as source_table_name,
                 CAST(NULL AS STRING) as owner,
                 CAST(NULL AS STRING) as department,
-                CAST(NULL AS INT) as priority
+                CAST(NULL AS INT) as priority,
+                CAST(NULL AS STRING) as runbook_url,
+                CAST(NULL AS STRING) as lineage_url,
+                CAST(NULL AS DOUBLE) as drift_threshold
             WHERE 1=0
             """
 
@@ -235,9 +266,11 @@ class MetricsAggregator:
 
         union_parts = []
         for table in discovered_tables:
-            owner = table.tags.get("owner", "unknown")
+            owner = table.owner or table.tags.get("owner", "unknown")
             department = table.tags.get("department", "unknown")
-            priority = table.tags.get("monitor_priority", "99")
+            priority = self._safe_priority(table.tags.get("monitor_priority", "99"))
+            runbook_url = table.runbook_url or ""
+            lineage_url = table.lineage_url or ""
 
             profile_table = (
                 f"{self.catalog}.{self.output_schema}."
@@ -247,10 +280,12 @@ class MetricsAggregator:
             union_parts.append(f"""
                 SELECT
                     {columns_sql},
-                    '{table.full_name}' as source_table_name,
-                    '{owner}' as owner,
-                    '{department}' as department,
-                    {priority} as priority
+                    {self._sql_literal(table.full_name)} as source_table_name,
+                    {self._sql_literal(owner)} as owner,
+                    {self._sql_literal(department)} as department,
+                    {priority} as priority,
+                    {self._sql_literal(runbook_url)} as runbook_url,
+                    {self._sql_literal(lineage_url)} as lineage_url
                 FROM {profile_table}
             """)
 
@@ -274,7 +309,9 @@ class MetricsAggregator:
                 CAST(NULL AS STRING) as source_table_name,
                 CAST(NULL AS STRING) as owner,
                 CAST(NULL AS STRING) as department,
-                CAST(NULL AS INT) as priority
+                CAST(NULL AS INT) as priority,
+                CAST(NULL AS STRING) as runbook_url,
+                CAST(NULL AS STRING) as lineage_url
             WHERE 1=0
             """
 
@@ -445,6 +482,9 @@ class MetricsAggregator:
         Scenario: User renames monitor_group "marketing" to "growth".
         Result: unified_drift_metrics_marketing becomes stale.
 
+        Safety: Skips cleanup when active_groups is empty to prevent
+        accidental deletion of all views during transient failures.
+
         Args:
             output_schema: Schema containing unified views.
             active_groups: Set of currently active group names (already sanitized).
@@ -453,6 +493,10 @@ class MetricsAggregator:
             List of dropped view names.
         """
         dropped = []
+
+        if not active_groups:
+            logger.warning("No active groups; skipping view cleanup to prevent accidental deletion")
+            return dropped
 
         # List all tables/views in the output schema
         try:

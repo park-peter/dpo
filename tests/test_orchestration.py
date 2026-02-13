@@ -6,6 +6,7 @@ import databricks.sdk as sdk
 
 import dpo
 from dpo.config import MonitoredTableConfig
+from dpo.coverage import CoverageReport
 from dpo.discovery import DiscoveredTable
 from dpo.provisioning import MonitorStatus, ProvisioningResult
 
@@ -130,6 +131,10 @@ class TestBulkOrchestration:
 
         w = MagicMock()
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: w)
+        coverage_report = CoverageReport(total_catalog_tables=4, total_monitored=3)
+        coverage_analyzer = MagicMock()
+        coverage_analyzer.analyze.return_value = coverage_report
+        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
 
         tables = [
             _discovered_table("test_catalog.sch.a"),
@@ -169,6 +174,7 @@ class TestBulkOrchestration:
         assert report.monitors_failed == 1
         assert report.orphans_cleaned == 1
         assert report.monitor_statuses == wait_statuses
+        assert report.coverage_report == coverage_report
 
     def test_run_bulk_provisioning_skips_wait_without_healthy_tables(
         self, monkeypatch, sample_config
@@ -180,6 +186,10 @@ class TestBulkOrchestration:
         config.dry_run = False
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
+        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=0)
+        coverage_analyzer = MagicMock()
+        coverage_analyzer.analyze.return_value = coverage_report
+        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
         tables = [_discovered_table("test_catalog.sch.a")]
         monkeypatch.setattr(dpo, "_build_table_list", MagicMock(return_value=tables))
 
@@ -196,6 +206,7 @@ class TestBulkOrchestration:
 
         wait_for_monitors.assert_not_called()
         assert report.monitor_statuses == []
+        assert report.coverage_report == coverage_report
 
     def test_run_bulk_provisioning_uses_dry_run_results(
         self, monkeypatch, sample_config
@@ -206,15 +217,21 @@ class TestBulkOrchestration:
         config.wait_for_monitors = True
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
+        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=0)
+        coverage_analyzer = MagicMock()
+        coverage_analyzer.analyze.return_value = coverage_report
+        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
         tables = [_discovered_table("test_catalog.sch.a")]
         monkeypatch.setattr(dpo, "_build_table_list", MagicMock(return_value=tables))
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
         monkeypatch.setattr(dpo, "wait_for_monitors", MagicMock())
 
         provisioner = MagicMock()
-        provisioner.dry_run_all.return_value = [
-            ProvisioningResult("test_catalog.sch.a", "dry_run", True)
-        ]
+        from dpo.provisioning import ImpactReport
+        provisioner.dry_run_all.return_value = (
+            [ProvisioningResult("test_catalog.sch.a", "dry_run", True)],
+            ImpactReport(),
+        )
         monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
 
         report = dpo.run_bulk_provisioning(config)
@@ -222,6 +239,48 @@ class TestBulkOrchestration:
         provisioner.dry_run_all.assert_called_once_with(tables)
         provisioner.provision_all.assert_not_called()
         assert report.tables_discovered == 1
+        assert report.coverage_report == coverage_report
+
+    def test_run_bulk_provisioning_runs_coverage_after_mutations(
+        self, monkeypatch, sample_config
+    ):
+        """Coverage should run after provisioning and orphan cleanup."""
+        config = sample_config
+        config.dry_run = False
+        config.wait_for_monitors = False
+        config.cleanup_orphans = True
+
+        monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
+        monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
+
+        tables = [_discovered_table("test_catalog.sch.a")]
+        monkeypatch.setattr(dpo, "_build_table_list", MagicMock(return_value=tables))
+
+        events = []
+
+        provisioner = MagicMock()
+        provisioner.provision_all.side_effect = lambda _tables: (
+            events.append("provision")
+            or [ProvisioningResult("test_catalog.sch.a", "created", True)]
+        )
+        provisioner.cleanup_orphans.side_effect = (
+            lambda _tables: events.append("cleanup") or []
+        )
+        monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
+
+        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=1)
+        coverage_analyzer = MagicMock()
+        coverage_analyzer.analyze.side_effect = (
+            lambda _tables: events.append("coverage") or coverage_report
+        )
+        monkeypatch.setattr(
+            dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer)
+        )
+
+        report = dpo.run_bulk_provisioning(config)
+
+        assert events == ["provision", "cleanup", "coverage"]
+        assert report.coverage_report == coverage_report
 
 
 class TestFullOrchestration:
@@ -256,6 +315,10 @@ class TestFullOrchestration:
         config.deploy_aggregated_dashboard = True
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
+        coverage_report = CoverageReport(total_catalog_tables=2, total_monitored=2)
+        coverage_analyzer = MagicMock()
+        coverage_analyzer.analyze.return_value = coverage_report
+        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
         verify_output = MagicMock()
         verify_view = MagicMock()
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", verify_output)
@@ -317,11 +380,15 @@ class TestFullOrchestration:
         dashboard_provisioner.cleanup_stale_dashboards.assert_called_once_with(
             config.dashboard_parent_path, {"ML Team", "default"}
         )
+        dashboard_provisioner.deploy_dashboards_by_group.assert_called_once_with(
+            views_by_group, config.dashboard_parent_path, coverage_report=coverage_report
+        )
         assert report.unified_drift_views["ML Team"].endswith("_ml_team")
         assert report.drift_alert_ids == {"ML Team": "drift_ml"}
         assert report.quality_alert_ids == {"default": "quality_default"}
         assert report.dashboard_ids == dashboards_by_group
         assert report.monitor_statuses == wait_statuses
+        assert report.coverage_report == coverage_report
 
     def test_run_orchestration_dry_run_skips_downstream(self, monkeypatch, sample_config):
         """Dry run in full mode should skip aggregation, alerting, and dashboard deployment."""
@@ -331,6 +398,10 @@ class TestFullOrchestration:
         config.wait_for_monitors = True
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
+        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=0)
+        coverage_analyzer = MagicMock()
+        coverage_analyzer.analyze.return_value = coverage_report
+        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
         monkeypatch.setattr(dpo, "verify_view_permissions", MagicMock())
 
@@ -338,9 +409,11 @@ class TestFullOrchestration:
         monkeypatch.setattr(dpo, "_build_table_list", MagicMock(return_value=tables))
 
         provisioner = MagicMock()
-        provisioner.dry_run_all.return_value = [
-            ProvisioningResult("test_catalog.sch.a", "dry_run", True)
-        ]
+        from dpo.provisioning import ImpactReport
+        provisioner.dry_run_all.return_value = (
+            [ProvisioningResult("test_catalog.sch.a", "dry_run", True)],
+            ImpactReport(),
+        )
         monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
 
         aggregator = MagicMock()
@@ -361,6 +434,7 @@ class TestFullOrchestration:
         dashboard_provisioner.deploy_dashboards_by_group.assert_not_called()
         assert report.unified_drift_views == {}
         assert report.dashboard_ids == {}
+        assert report.coverage_report == coverage_report
 
     def test_run_orchestration_logs_skip_when_no_healthy_tables(
         self, monkeypatch, sample_config
@@ -374,6 +448,10 @@ class TestFullOrchestration:
         config.deploy_aggregated_dashboard = True
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
+        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=0)
+        coverage_analyzer = MagicMock()
+        coverage_analyzer.analyze.return_value = coverage_report
+        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
         monkeypatch.setattr(dpo, "verify_view_permissions", MagicMock())
 
@@ -403,8 +481,58 @@ class TestFullOrchestration:
 
         wait_for_monitors.assert_not_called()
         aggregator.create_unified_views_by_group.assert_not_called()
-        alerter.create_alerts_by_group.assert_called_once_with({}, "test_catalog")
-        dashboard_provisioner.deploy_dashboards_by_group.assert_called_once_with(
-            {}, config.dashboard_parent_path
-        )
+        # With empty views_by_group, alerting and dashboards are skipped
+        # to prevent destructive cleanup on transient failures
+        alerter.create_alerts_by_group.assert_not_called()
+        dashboard_provisioner.deploy_dashboards_by_group.assert_not_called()
+        dashboard_provisioner.cleanup_stale_dashboards.assert_not_called()
         assert report.unified_drift_views == {}
+        assert report.coverage_report == coverage_report
+
+    def test_run_orchestration_runs_coverage_after_mutations(
+        self, monkeypatch, sample_config
+    ):
+        """Full mode should run coverage after provisioning and orphan cleanup."""
+        config = sample_config
+        config.mode = "full"
+        config.dry_run = False
+        config.wait_for_monitors = False
+        config.cleanup_orphans = True
+        config.alerting.enable_aggregated_alerts = False
+        config.deploy_aggregated_dashboard = False
+
+        monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
+        monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
+        monkeypatch.setattr(dpo, "verify_view_permissions", MagicMock())
+
+        tables = [_discovered_table("test_catalog.sch.a")]
+        monkeypatch.setattr(dpo, "_build_table_list", MagicMock(return_value=tables))
+
+        events = []
+
+        provisioner = MagicMock()
+        provisioner.provision_all.side_effect = lambda _tables: (
+            events.append("provision")
+            or [ProvisioningResult("test_catalog.sch.a", "created", True)]
+        )
+        provisioner.cleanup_orphans.side_effect = (
+            lambda _tables: events.append("cleanup") or []
+        )
+        monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
+
+        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=1)
+        coverage_analyzer = MagicMock()
+        coverage_analyzer.analyze.side_effect = (
+            lambda _tables: events.append("coverage") or coverage_report
+        )
+        monkeypatch.setattr(
+            dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer)
+        )
+
+        aggregator = MagicMock()
+        monkeypatch.setattr(dpo, "MetricsAggregator", MagicMock(return_value=aggregator))
+
+        report = dpo.run_orchestration(config)
+
+        assert events == ["provision", "cleanup", "coverage"]
+        assert report.coverage_report == coverage_report
