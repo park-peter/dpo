@@ -4,7 +4,6 @@ Shared utilities for DPO.
 Includes:
 - Config hashing for smart diffing
 - Permission verification
-- API retry wrappers
 - SQL identifier sanitization
 """
 
@@ -13,10 +12,9 @@ import json
 import logging
 import re
 import time
-from typing import Any, Callable, Dict, Literal
+from typing import Any, Dict, Literal
 
 from databricks.sdk import WorkspaceClient
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +62,13 @@ def sanitize_sql_identifier(
 
 
 def hash_config(config_dict: Dict[str, Any]) -> str:
-    """
-    Generate deterministic hash of config for change detection.
+    """Generate deterministic hash of config for change detection.
 
-    Only hashes fields we control (ignores system fields like monitor_id, created_at).
+    Args:
+        config_dict: Configuration dictionary to hash.
+
+    Returns:
+        16-character hex hash string.
     """
     controlled_fields = {
         "profile_type",
@@ -91,10 +92,14 @@ def hash_config(config_dict: Dict[str, Any]) -> str:
 
 
 def calculate_config_diff(existing_config: Dict[str, Any], desired_config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Compare only user-controllable fields, ignoring system fields.
+    """Compare only user-controllable fields, ignoring system fields.
 
-    Returns dict of differences: {field: (existing_value, desired_value)}
+    Args:
+        existing_config: Current monitor configuration.
+        desired_config: Desired monitor configuration.
+
+    Returns:
+        Dict of differences: {field: (existing_value, desired_value)}.
     """
     ignore_fields = {
         "monitor_id",
@@ -222,7 +227,17 @@ def verify_view_permissions(
     schema: str,
     warehouse_id: str,
 ) -> None:
-    """Pre-flight check: verify CREATE VIEW permissions in a schema."""
+    """Pre-flight check: verify CREATE VIEW permissions in a schema.
+
+    Args:
+        w: WorkspaceClient instance.
+        catalog: Target catalog name.
+        schema: Target schema name.
+        warehouse_id: SQL Warehouse ID for statement execution.
+
+    Raises:
+        PermissionError: If CREATE VIEW permission is missing.
+    """
     test_view = f"{catalog}.{schema}._dpo_view_check_{int(time.time())}"
 
     logger.info("Verifying CREATE VIEW permissions on %s.%s", catalog, schema)
@@ -270,53 +285,16 @@ def verify_view_permissions(
         raise
 
 
-def create_retry_wrapper(
-    max_attempts: int = 5,
-    min_wait: int = 2,
-    max_wait: int = 60,
-) -> Callable:
-    """
-    Create a retry decorator with exponential backoff.
-
-    Handles HTTP 429 (Too Many Requests) and transient errors.
-    """
-
-    def decorator(func: Callable) -> Callable:
-        @retry(
-            stop=stop_after_attempt(max_attempts),
-            wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),
-            retry=retry_if_exception_type(Exception),
-            reraise=True,
-        )
-        def wrapper(*args, **kwargs):
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
-def api_call_with_retry(func: Callable, *args, **kwargs) -> Any:
-    """
-    Execute an API call with retry logic for rate limiting.
-
-    Handles HTTP 429 errors with exponential backoff.
-    """
-
-    @retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=2, max=60),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
-    def _call():
-        return func(*args, **kwargs)
-
-    return _call()
-
-
 def safe_get_table_id(w: WorkspaceClient, full_name: str) -> str | None:
-    """Safely get table_id from full name."""
+    """Safely get table_id from full name.
+
+    Args:
+        w: WorkspaceClient instance.
+        full_name: Fully qualified table name.
+
+    Returns:
+        Table ID or None if not found.
+    """
     try:
         table_info = w.tables.get(full_name=full_name)
         return table_info.table_id
@@ -325,7 +303,16 @@ def safe_get_table_id(w: WorkspaceClient, full_name: str) -> str | None:
 
 
 def safe_get_schema_id(w: WorkspaceClient, catalog: str, schema: str) -> str | None:
-    """Safely get schema_id from catalog.schema."""
+    """Safely get schema_id from catalog.schema.
+
+    Args:
+        w: WorkspaceClient instance.
+        catalog: Catalog name.
+        schema: Schema name.
+
+    Returns:
+        Schema ID or None if not found.
+    """
     try:
         schema_info = w.schemas.get(full_name=f"{catalog}.{schema}")
         return schema_info.schema_id
@@ -334,7 +321,14 @@ def safe_get_schema_id(w: WorkspaceClient, catalog: str, schema: str) -> str | N
 
 
 def format_duration(seconds: float) -> str:
-    """Format duration in human-readable form."""
+    """Format duration in human-readable form.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Formatted string (e.g., "30.5s", "2.0m", "1.0h").
+    """
     if seconds < 60:
         return f"{seconds:.1f}s"
     elif seconds < 3600:

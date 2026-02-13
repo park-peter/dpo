@@ -9,6 +9,7 @@ from dpo.config import (
     CustomMetricConfig,
     DiscoveryConfig,
     MonitoredTableConfig,
+    ObjectiveFunctionConfig,
     OrchestratorConfig,
     ProfileConfig,
 )

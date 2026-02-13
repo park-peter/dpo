@@ -190,7 +190,7 @@ def validate_workspace(config: OrchestratorConfig) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 @click.group()
-@click.version_option(package_name="dpo")
+@click.version_option(package_name="databricks-dpo")
 @click.option("--verbose", is_flag=True, help="Enable diagnostic logging")
 @click.pass_context
 def cli(ctx, verbose):
@@ -240,6 +240,21 @@ def validate(ctx, config_path, check_workspace, output_format):
             errors.extend(workspace_issues)
         else:
             checks.append({"check": "workspace", "status": "pass"})
+
+        # UC function validation for objective functions
+        if config.objective_functions:
+            from dpo.validators import validate_uc_functions
+            from databricks.sdk import WorkspaceClient
+            try:
+                w = WorkspaceClient()
+                uc_issues = validate_uc_functions(config, w)
+                if uc_issues:
+                    checks.append({"check": "uc_functions", "status": "fail", "issues": len(uc_issues)})
+                    errors.extend(uc_issues)
+                else:
+                    checks.append({"check": "uc_functions", "status": "pass"})
+            except Exception as e:
+                errors.append({"check": "uc_functions", "message": f"UC function validation failed: {e}"})
 
     status = "fail" if errors else "pass"
     _output_validate(config_path, checks, errors, output_format, status)

@@ -10,6 +10,7 @@ from dpo.config import (
     CustomMetricConfig,
     DiscoveryConfig,
     MonitoredTableConfig,
+    ObjectiveFunctionConfig,
     OrchestratorConfig,
     ProfileConfig,
     load_config,
@@ -465,3 +466,328 @@ class TestCustomMetricConfig:
                 definition="test",
                 output_type="double",
             )
+
+
+class TestObjectiveFunctionConfig:
+    """Tests for ObjectiveFunctionConfig model."""
+
+    def test_basic_objective_function(self):
+        """Test creating a basic objective function."""
+        obj = ObjectiveFunctionConfig(
+            version="1.0",
+            owner="ml_team",
+            description="ROC AUC for churn",
+            uc_function_name="catalog.schema.roc_auc_func",
+            metric=CustomMetricConfig(
+                name="rocauc_30d",
+                metric_type="aggregate",
+                input_columns=[":table"],
+                definition="catalog.schema.roc_auc_func({{prediction_col}}, {{label_col}})",
+                output_type="double",
+            ),
+        )
+        assert obj.version == "1.0"
+        assert obj.metric.name == "rocauc_30d"
+
+    def test_no_id_field(self):
+        """ObjectiveFunctionConfig should not have an 'id' field."""
+        obj = ObjectiveFunctionConfig(
+            metric=CustomMetricConfig(
+                name="test", metric_type="aggregate",
+                input_columns=["col"], definition="SUM(col)",
+            ),
+        )
+        assert not hasattr(obj, "id") or "id" not in obj.model_fields
+
+    def test_drift_metric_type_accepted(self):
+        """Test drift metric type is accepted."""
+        metric = CustomMetricConfig(
+            name="drift_metric",
+            metric_type="drift",
+            input_columns=[":table"],
+            definition="custom_drift({{current_df}}, {{base_df}})",
+        )
+        assert metric.metric_type == "drift"
+
+
+class TestTemplateVariableValidator:
+    """Tests for template variable model_validator on CustomMetricConfig."""
+
+    def test_known_vars_pass_silently(self):
+        """Known Databricks variables should not trigger warnings."""
+        metric = CustomMetricConfig(
+            name="test", metric_type="aggregate",
+            input_columns=[":table"],
+            definition="func({{prediction_col}}, {{label_col}})",
+        )
+        assert metric.definition  # no error
+
+    def test_input_columns_treated_as_valid(self):
+        """Variables matching input_columns names should be allowed."""
+        metric = CustomMetricConfig(
+            name="test", metric_type="derived",
+            input_columns=["null_count", "count"],
+            definition="{{null_count}} / {{count}}",
+        )
+        assert metric.definition
+
+    def test_unknown_vars_warn(self, caplog):
+        """Unknown template variables should emit a warning."""
+        import logging
+        with caplog.at_level(logging.WARNING, logger="dpo.config"):
+            CustomMetricConfig(
+                name="test", metric_type="aggregate",
+                input_columns=["col"],
+                definition="{{totally_unknown_var}}",
+            )
+        assert "totally_unknown_var" in caplog.text
+
+
+class TestWithinLayerDuplicates:
+    """Tests for within-layer duplicate metric name detection."""
+
+    def test_profile_defaults_duplicates_raise(self):
+        """Duplicate names within profile_defaults.custom_metrics should error."""
+        with pytest.raises(ValidationError, match="Duplicate metric names"):
+            ProfileConfig(
+                profile_type="SNAPSHOT",
+                output_schema_name="monitoring",
+                custom_metrics=[
+                    CustomMetricConfig(name="dup", metric_type="aggregate", input_columns=["a"], definition="SUM(a)"),
+                    CustomMetricConfig(name="dup", metric_type="aggregate", input_columns=["b"], definition="SUM(b)"),
+                ],
+            )
+
+    def test_per_table_duplicates_raise(self):
+        """Duplicate names within per-table custom_metrics should error."""
+        with pytest.raises(ValidationError, match="Duplicate metric names"):
+            MonitoredTableConfig(
+                custom_metrics=[
+                    CustomMetricConfig(name="dup", metric_type="aggregate", input_columns=["a"], definition="SUM(a)"),
+                    CustomMetricConfig(name="dup", metric_type="aggregate", input_columns=["b"], definition="SUM(b)"),
+                ],
+            )
+
+    def test_cross_layer_duplicates_allowed(self):
+        """Cross-layer duplicates (overrides) should be allowed."""
+        config = OrchestratorConfig(
+            catalog_name="test",
+            warehouse_id="test",
+            include_tagged_tables=False,
+            monitored_tables={
+                "test.sch.tbl": MonitoredTableConfig(
+                    custom_metrics=[
+                        CustomMetricConfig(name="metric_a", metric_type="aggregate", input_columns=["x"], definition="SUM(x)"),
+                    ],
+                ),
+            },
+            profile_defaults=ProfileConfig(
+                profile_type="SNAPSHOT",
+                output_schema_name="monitoring",
+                custom_metrics=[
+                    CustomMetricConfig(name="metric_a", metric_type="aggregate", input_columns=["y"], definition="AVG(y)"),
+                ],
+            ),
+        )
+        assert config is not None  # no error
+
+
+class TestObjectiveResolution:
+    """Tests for objective function cross-reference and resolution."""
+
+    def test_missing_objective_id_raises(self):
+        """Referencing non-existent objective ID should error."""
+        with pytest.raises(ValidationError, match="does not exist"):
+            OrchestratorConfig(
+                catalog_name="test",
+                warehouse_id="test",
+                include_tagged_tables=False,
+                monitored_tables={
+                    "test.sch.tbl": MonitoredTableConfig(
+                        objective_function_ids=["nonexistent"],
+                    ),
+                },
+                profile_defaults=ProfileConfig(
+                    profile_type="SNAPSHOT",
+                    output_schema_name="monitoring",
+                ),
+                objective_functions={},
+            )
+
+    def test_resolved_objective_duplicate_names_raise(self):
+        """Two objectives resolving to same metric name on one table should error."""
+        with pytest.raises(ValidationError, match="same metric name"):
+            OrchestratorConfig(
+                catalog_name="test",
+                warehouse_id="test",
+                include_tagged_tables=False,
+                monitored_tables={
+                    "test.sch.tbl": MonitoredTableConfig(
+                        objective_function_ids=["obj1", "obj2"],
+                    ),
+                },
+                profile_defaults=ProfileConfig(
+                    profile_type="SNAPSHOT",
+                    output_schema_name="monitoring",
+                ),
+                objective_functions={
+                    "obj1": ObjectiveFunctionConfig(
+                        metric=CustomMetricConfig(name="same_name", metric_type="aggregate", input_columns=["a"], definition="SUM(a)"),
+                    ),
+                    "obj2": ObjectiveFunctionConfig(
+                        metric=CustomMetricConfig(name="same_name", metric_type="aggregate", input_columns=["b"], definition="AVG(b)"),
+                    ),
+                },
+            )
+
+    def test_template_compatibility_non_inference_raises(self):
+        """Using {{prediction_col}} on non-INFERENCE profile_type should error."""
+        with pytest.raises(ValidationError, match="SNAPSHOT"):
+            OrchestratorConfig(
+                catalog_name="test",
+                warehouse_id="test",
+                include_tagged_tables=False,
+                monitored_tables={
+                    "test.sch.tbl": MonitoredTableConfig(
+                        objective_function_ids=["obj1"],
+                    ),
+                },
+                profile_defaults=ProfileConfig(
+                    profile_type="SNAPSHOT",
+                    output_schema_name="monitoring",
+                ),
+                objective_functions={
+                    "obj1": ObjectiveFunctionConfig(
+                        metric=CustomMetricConfig(
+                            name="metric", metric_type="aggregate",
+                            input_columns=[":table"],
+                            definition="func({{prediction_col}})",
+                        ),
+                    ),
+                },
+            )
+
+    def test_template_compatibility_missing_prediction_column_raises(self):
+        """Using {{prediction_col}} without prediction_column configured should error."""
+        with pytest.raises(ValidationError, match="prediction_column"):
+            OrchestratorConfig(
+                catalog_name="test",
+                warehouse_id="test",
+                include_tagged_tables=False,
+                monitored_tables={
+                    "test.sch.tbl": MonitoredTableConfig(
+                        objective_function_ids=["obj1"],
+                    ),
+                },
+                profile_defaults=ProfileConfig(
+                    profile_type="INFERENCE",
+                    output_schema_name="monitoring",
+                    prediction_column=None,
+                    timestamp_column="ts",
+                ),
+                objective_functions={
+                    "obj1": ObjectiveFunctionConfig(
+                        metric=CustomMetricConfig(
+                            name="metric", metric_type="aggregate",
+                            input_columns=[":table"],
+                            definition="func({{prediction_col}})",
+                        ),
+                    ),
+                },
+            )
+
+    def test_valid_objective_config_passes(self):
+        """A valid objective function configuration should pass."""
+        config = OrchestratorConfig(
+            catalog_name="test",
+            warehouse_id="test",
+            include_tagged_tables=False,
+            monitored_tables={
+                "test.sch.tbl": MonitoredTableConfig(
+                    objective_function_ids=["obj1"],
+                    prediction_column="pred",
+                    label_column="label",
+                ),
+            },
+            profile_defaults=ProfileConfig(
+                profile_type="INFERENCE",
+                output_schema_name="monitoring",
+                prediction_column="pred",
+                timestamp_column="ts",
+            ),
+            objective_functions={
+                "obj1": ObjectiveFunctionConfig(
+                    version="1.0",
+                    owner="ml_team",
+                    uc_function_name="cat.sch.func",
+                    metric=CustomMetricConfig(
+                        name="rocauc", metric_type="aggregate",
+                        input_columns=[":table"],
+                        definition="cat.sch.func({{prediction_col}}, {{label_col}})",
+                    ),
+                ),
+            },
+        )
+        assert "obj1" in config.objective_functions
+
+
+class TestZeroObjectivePath:
+    """Tests for zero-objective path behavior."""
+
+    def test_no_objectives_passes_validation(self):
+        """Config with no objectives should pass validation."""
+        config = OrchestratorConfig(
+            catalog_name="test",
+            warehouse_id="test",
+            include_tagged_tables=False,
+            monitored_tables={"test.sch.tbl": MonitoredTableConfig()},
+            profile_defaults=ProfileConfig(
+                profile_type="SNAPSHOT",
+                output_schema_name="monitoring",
+            ),
+        )
+        assert config.objective_functions == {}
+
+    def test_empty_objectives_no_validation_noise(self):
+        """Empty objective_functions should trigger no objective-related checks."""
+        config = OrchestratorConfig(
+            catalog_name="test",
+            warehouse_id="test",
+            include_tagged_tables=False,
+            monitored_tables={"test.sch.tbl": MonitoredTableConfig()},
+            profile_defaults=ProfileConfig(
+                profile_type="SNAPSHOT",
+                output_schema_name="monitoring",
+            ),
+            objective_functions={},
+        )
+        assert config.objective_functions == {}
+
+
+class TestExtendedGranularity:
+    """Tests for extended granularity support."""
+
+    @pytest.mark.parametrize("granularity", ["2 weeks", "3 weeks", "4 weeks", "1 year"])
+    def test_new_granularity_values_accepted(self, granularity):
+        """New granularity values should be accepted."""
+        config = MonitoredTableConfig(granularity=granularity)
+        assert config.granularity == granularity
+
+    def test_multi_granularity_accepted(self):
+        """Multiple granularities should be accepted."""
+        config = MonitoredTableConfig(granularities=["1 day", "1 month"])
+        assert config.granularities == ["1 day", "1 month"]
+
+    def test_invalid_granularity_in_list_raises(self):
+        """Invalid granularity in list should raise error."""
+        with pytest.raises(ValidationError, match="Unsupported granularity"):
+            MonitoredTableConfig(granularities=["1 day", "invalid"])
+
+    def test_profile_multi_granularity(self):
+        """ProfileConfig should accept multi-granularity."""
+        config = ProfileConfig(
+            profile_type="SNAPSHOT",
+            output_schema_name="monitoring",
+            granularities=["1 day", "1 week", "1 month"],
+        )
+        assert len(config.granularities) == 3

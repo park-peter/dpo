@@ -6,9 +6,7 @@ import pytest
 
 from dpo.utils import (
     MAX_SQL_IDENTIFIER_LENGTH,
-    api_call_with_retry,
     calculate_config_diff,
-    create_retry_wrapper,
     format_duration,
     hash_config,
     safe_get_schema_id,
@@ -292,33 +290,6 @@ class TestVerifyViewPermissions:
                 schema="global_monitoring",
                 warehouse_id="warehouse_123",
             )
-
-
-class TestRetryHelpers:
-    """Tests for retry wrapper helpers."""
-
-    def test_create_retry_wrapper_retries_and_succeeds(self):
-        """Test decorator retries once and then returns successful result."""
-        attempts = {"count": 0}
-
-        @create_retry_wrapper(max_attempts=3, min_wait=0, max_wait=0)
-        def flaky():
-            attempts["count"] += 1
-            if attempts["count"] == 1:
-                raise RuntimeError("temporary")
-            return "ok"
-
-        assert flaky() == "ok"
-        assert attempts["count"] == 2
-
-    def test_api_call_with_retry_executes_callable(self):
-        """Test api_call_with_retry delegates args/kwargs and returns value."""
-        fn = MagicMock(return_value={"status": "ok"})
-
-        result = api_call_with_retry(fn, 1, mode="fast")
-
-        assert result == {"status": "ok"}
-        fn.assert_called_once_with(1, mode="fast")
 
 
 class TestSafeGetters:
