@@ -22,21 +22,21 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "databricks-sdk>=0.77.0",
-    "pyyaml>=6.0",
-    "pydantic>=2.0",
-    "tenacity>=8.0",
-    "tabulate>=0.9.0",
-    "click>=8.0",
+    "databricks-sdk==0.88.0",
+    "pyyaml==6.0.3",
+    "pydantic==2.12.5",
+    "tenacity==9.1.4",
+    "tabulate==0.9.0",
+    "click==8.3.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-mock",
-    "pytest-cov>=7.0.0",
-    "black",
-    "ruff",
+    "pytest==9.0.2",
+    "pytest-mock==3.15.1",
+    "pytest-cov==7.0.0",
+    "black==26.1.0",
+    "ruff==0.15.1",
 ]
 
 [project.scripts]
