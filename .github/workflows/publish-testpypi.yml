@@ -3,7 +3,9 @@ name: Publish TestPyPI
 on:
   push:
     tags:
-      - "v*"
+      - "v*rc*"
+      - "v*a*"
+      - "v*b*"
 
 jobs:
   # Gate: run full CI before publishing
