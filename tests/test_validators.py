@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+from databricks.sdk.errors import NotFound
 
 from dpo.config import (
     CustomMetricConfig,
@@ -40,11 +41,39 @@ class TestValidateUcFunctions:
         )
 
         w = MagicMock()
-        w.functions.get.side_effect = Exception("Not found")
+        w.functions.get.side_effect = NotFound("Not found")
 
         issues = validate_uc_functions(config, w)
         assert len(issues) == 1
         assert issues[0]["objective"] == "obj1"
+
+    def test_non_notfound_error_propagates(self):
+        """Non-NotFound errors (auth, transient) should propagate."""
+        config = OrchestratorConfig(
+            catalog_name="test",
+            warehouse_id="test",
+            include_tagged_tables=False,
+            monitored_tables={"test.sch.tbl": MonitoredTableConfig()},
+            profile_defaults=ProfileConfig(
+                profile_type="SNAPSHOT",
+                output_schema_name="monitoring",
+            ),
+            objective_functions={
+                "obj1": ObjectiveFunctionConfig(
+                    uc_function_name="cat.sch.func",
+                    metric=CustomMetricConfig(
+                        name="m", metric_type="aggregate",
+                        input_columns=["a"], definition="SUM(a)",
+                    ),
+                ),
+            },
+        )
+
+        w = MagicMock()
+        w.functions.get.side_effect = PermissionError("forbidden")
+
+        with pytest.raises(PermissionError):
+            validate_uc_functions(config, w)
 
     def test_existing_function_passes(self):
         """Existing UC function should pass."""
@@ -171,7 +200,34 @@ class TestRunPreflightChecks:
         )
 
         w = MagicMock()
-        w.functions.get.side_effect = Exception("Not found")
+        w.functions.get.side_effect = NotFound("Not found")
 
         with pytest.raises(ValueError, match="UC function validation failed"):
             run_preflight_checks(config, w)
+
+    def test_passes_when_uc_functions_exist(self):
+        """run_preflight_checks should complete without raising when all functions exist."""
+        config = OrchestratorConfig(
+            catalog_name="test",
+            warehouse_id="test",
+            include_tagged_tables=False,
+            monitored_tables={"test.sch.tbl": MonitoredTableConfig()},
+            profile_defaults=ProfileConfig(
+                profile_type="SNAPSHOT",
+                output_schema_name="monitoring",
+            ),
+            objective_functions={
+                "obj1": ObjectiveFunctionConfig(
+                    uc_function_name="cat.sch.func",
+                    metric=CustomMetricConfig(
+                        name="m", metric_type="aggregate",
+                        input_columns=["a"], definition="SUM(a)",
+                    ),
+                ),
+            },
+        )
+
+        w = MagicMock()
+        w.functions.get.return_value = MagicMock()
+
+        run_preflight_checks(config, w)

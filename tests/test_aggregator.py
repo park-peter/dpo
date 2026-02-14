@@ -147,6 +147,60 @@ class TestUnifiedProfileView:
         assert "WHERE 1=0" in ddl
 
 
+class TestUnifiedPerformanceView:
+    """Tests for unified inference performance view generation."""
+
+    def test_create_unified_performance_view(
+        self, mock_workspace_client, sample_config, sample_discovered_table
+    ):
+        """Performance view should be created with per-table SELECT and table-level filter."""
+        aggregator = MetricsAggregator(mock_workspace_client, sample_config)
+
+        ddl = aggregator.create_unified_performance_view(
+            [sample_discovered_table],
+            "test_catalog.global_monitoring.unified_performance_metrics",
+            use_materialized=False,
+        )
+
+        assert "CREATE OR REPLACE VIEW" in ddl
+        assert "column_name = ':table'" in ddl
+        assert "precision.weighted as precision_weighted" in ddl
+        assert "source_table_name" in ddl
+
+    def test_create_unified_performance_view_empty_when_no_inference_tables(
+        self, mock_workspace_client, sample_snapshot_config, sample_discovered_table
+    ):
+        """When no INFERENCE monitors exist, create an empty-schema performance view."""
+        aggregator = MetricsAggregator(mock_workspace_client, sample_snapshot_config)
+
+        ddl = aggregator.create_unified_performance_view(
+            [sample_discovered_table],
+            "test_catalog.global_monitoring.unified_performance_metrics",
+            use_materialized=False,
+        )
+
+        assert "CREATE OR REPLACE VIEW" in ddl
+        assert "WHERE 1=0" in ddl
+        assert "CAST(NULL AS DOUBLE) as accuracy_score" in ddl
+
+    def test_create_unified_performance_view_raises_on_failed_statement(
+        self, mock_workspace_client, sample_config, sample_discovered_table
+    ):
+        """FAILED SQL execution should raise RuntimeError for performance view creation."""
+        failed = MagicMock()
+        failed.status.state.value = "FAILED"
+        failed.status.error = "permission denied"
+        mock_workspace_client.statement_execution.execute_statement.return_value = failed
+        aggregator = MetricsAggregator(mock_workspace_client, sample_config)
+
+        with pytest.raises(RuntimeError, match="Failed to create view"):
+            aggregator.create_unified_performance_view(
+                [sample_discovered_table],
+                "test_catalog.global_monitoring.unified_performance_metrics",
+                use_materialized=False,
+            )
+
+
 class TestHelperQueries:
     """Tests for helper query generation."""
 

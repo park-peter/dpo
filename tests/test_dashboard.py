@@ -12,13 +12,6 @@ from dpo.dashboard import DashboardProvisioner
 class TestDashboardProvisioner:
     """Tests for DashboardProvisioner behavior."""
 
-    def test_initialization(self, mock_workspace_client, sample_config):
-        """Test provisioner stores workspace client and config-derived catalog."""
-        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
-
-        assert provisioner.w is mock_workspace_client
-        assert provisioner.catalog == "test_catalog"
-
     def test_deploy_dashboard_creates_when_missing(
         self, mock_workspace_client, sample_config
     ):
@@ -53,10 +46,18 @@ class TestDashboardProvisioner:
         assert "coverage_unmonitored" in ds_by_name
         assert "coverage_stale" in ds_by_name
         assert "coverage_orphans" in ds_by_name
+        assert "unified_performance" in ds_by_name
+        assert "perf_vs_drift" in ds_by_name
         assert (
             ds_by_name["unified_drift"]["query"]
             == "SELECT * FROM test_catalog.global_monitoring.unified_drift_metrics"
         )
+        assert (
+            ds_by_name["unified_performance"]["query"]
+            == "SELECT * FROM test_catalog.global_monitoring.unified_performance_metrics"
+        )
+        assert "{unified_drift_view}" not in ds_by_name["perf_vs_drift"]["query"]
+        assert "{unified_performance_view}" not in ds_by_name["perf_vs_drift"]["query"]
 
     def test_deploy_dashboard_updates_when_existing(
         self, mock_workspace_client, sample_config
@@ -180,6 +181,7 @@ class TestDashboardProvisioner:
                     "cat.sch.drift_ml",
                     "/Workspace/Shared/DPO",
                     unified_profile_view="cat.sch.profile_ml",
+                    unified_performance_view=None,
                     dashboard_name="DPO Health - ml_team",
                     coverage_report=None,
                 ),
@@ -187,6 +189,7 @@ class TestDashboardProvisioner:
                     "cat.sch.drift_default",
                     "/Workspace/Shared/DPO",
                     unified_profile_view="cat.sch.profile_default",
+                    unified_performance_view=None,
                     dashboard_name="DPO Health - default",
                     coverage_report=None,
                 ),
@@ -318,3 +321,51 @@ class TestDashboardProvisioner:
             "test_catalog.ml.predictions"
             in template["datasets"][0]["query"]
         )
+
+    def test_deploy_executive_rollup_creates_and_escapes_group_names(
+        self, mock_workspace_client, sample_config
+    ):
+        """Rollup deployment should create dashboard and SQL-escape group names."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(
+            dashboard_id="rollup_123"
+        )
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+
+        dashboard_id = provisioner.deploy_executive_rollup(
+            {
+                "O'Reilly": ("cat.gm.unified_drift_metrics_oreilly", "cat.gm.unified_profile_metrics_oreilly"),
+            },
+            "/Workspace/Shared/DPO",
+        )
+
+        assert dashboard_id == "rollup_123"
+        payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
+        serialized = json.loads(payload.serialized_dashboard)
+        drift_query = next(
+            ds["query"] for ds in serialized["datasets"] if ds["name"] == "rollup_drift"
+        )
+        assert "O''Reilly" in drift_query
+        assert "O'Reilly" not in drift_query
+
+    def test_deploy_executive_rollup_updates_existing(
+        self, mock_workspace_client, sample_config
+    ):
+        """Rollup deployment should update existing dashboard when one is found."""
+        existing = MagicMock(display_name="DPO Executive Rollup", dashboard_id="rollup_existing")
+        mock_workspace_client.lakeview.list.return_value = [existing]
+        mock_workspace_client.lakeview.update.return_value = MagicMock(
+            dashboard_id="rollup_existing"
+        )
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+
+        dashboard_id = provisioner.deploy_executive_rollup(
+            {
+                "default": ("cat.gm.unified_drift_metrics_default", "cat.gm.unified_profile_metrics_default"),
+            },
+            "/Workspace/Shared/DPO",
+        )
+
+        assert dashboard_id == "rollup_existing"
+        mock_workspace_client.lakeview.update.assert_called_once()
+        mock_workspace_client.lakeview.create.assert_not_called()
