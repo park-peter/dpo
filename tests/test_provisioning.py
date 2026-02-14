@@ -10,7 +10,11 @@ from databricks.sdk.service.dataquality import (
     InferenceProblemType,
 )
 
-from dpo.config import MonitoredTableConfig
+from dpo.config import (
+    CustomMetricConfig,
+    MonitoredTableConfig,
+    ObjectiveFunctionConfig,
+)
 from dpo.discovery import DiscoveredTable
 from dpo.provisioning import ImpactReport, ProfileProvisioner, ProvisioningResult
 from tests.conftest import create_mock_column
@@ -49,16 +53,6 @@ class TestImpactReport:
 
 class TestProfileProvisioner:
     """Tests for ProfileProvisioner class."""
-
-    def test_granularity_map(self, mock_workspace_client, sample_config):
-        """Test granularity mapping."""
-        provisioner = ProfileProvisioner(mock_workspace_client, sample_config)
-
-        assert "1 day" in provisioner.GRANULARITY_MAP
-        assert "1 hour" in provisioner.GRANULARITY_MAP
-        assert provisioner.GRANULARITY_MAP["1 day"] == (
-            AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY
-        )
 
     def test_resolve_setting_from_monitored_tables(
         self, mock_workspace_client, sample_config, sample_discovered_table
@@ -229,7 +223,7 @@ class TestProfileProvisioner:
 
         assert config_dict["profile_type"] == "INFERENCE"
         assert config_dict["output_schema_name"] == "monitoring_results"
-        assert config_dict["granularity"] == "1 day"
+        assert config_dict["granularities"] == ["1 day"]
         assert "prediction_column" in config_dict
 
     def test_build_config_dict_timeseries(
@@ -247,6 +241,22 @@ class TestProfileProvisioner:
 
         assert config_dict["profile_type"] == "TIMESERIES"
         assert config_dict["timestamp_column"] == "event_time"
+
+    def test_build_config_dict_sorts_multi_granularities(
+        self, mock_workspace_client, sample_timeseries_config
+    ):
+        """Config hash input should normalize multi-granularity order."""
+        table_name = "test_catalog.events.page_views"
+        sample_timeseries_config.monitored_tables[table_name] = MonitoredTableConfig(
+            granularities=["1 month", "1 day"],
+            timestamp_column="event_time",
+        )
+        table = DiscoveredTable(full_name=table_name, tags={})
+        provisioner = ProfileProvisioner(mock_workspace_client, sample_timeseries_config)
+
+        config_dict = provisioner._build_config_dict(table)
+
+        assert config_dict["granularities"] == ["1 day", "1 month"]
 
     def test_build_config_dict_snapshot(
         self,
@@ -456,6 +466,27 @@ class TestProfileProvisionerProfileTypes:
 
         assert config.baseline_table_name == "test_catalog.ml.churn_baseline"
 
+    def test_build_timeseries_config_uses_fallback_timestamp_and_multi_granularities(
+        self, mock_workspace_client, sample_timeseries_config
+    ):
+        """TIMESERIES config should use default timestamp and table-level granularities."""
+        table_name = "test_catalog.events.page_views"
+        sample_timeseries_config.monitored_tables[table_name] = MonitoredTableConfig(
+            timestamp_column=None,
+            granularities=["1 day", "1 month"],
+        )
+        table = DiscoveredTable(
+            full_name=table_name,
+            columns=[create_mock_column("event_time", "TIMESTAMP")],
+        )
+        provisioner = ProfileProvisioner(mock_workspace_client, sample_timeseries_config)
+
+        config = provisioner._build_data_profiling_config(table, "schema_123", [])
+
+        assert config.time_series is not None
+        assert config.time_series.timestamp_column == "event_time"
+        assert len(config.time_series.granularities) == 2
+
 
 class TestProvisioningCustomMetrics:
     """Tests for custom metrics embedded in DataProfilingConfig."""
@@ -492,6 +523,86 @@ class TestProvisioningCustomMetrics:
 
         assert config.custom_metrics is not None
         assert len(config.custom_metrics) == 2
+
+    def test_build_custom_metrics_merges_objectives_and_table_overrides(
+        self, mock_workspace_client, sample_config, sample_discovered_table
+    ):
+        """Three-tier custom metric merge should include objectives and table-level overrides."""
+        sample_config.profile_defaults.custom_metrics = [
+            CustomMetricConfig(
+                name="metric_default",
+                metric_type="aggregate",
+                input_columns=["a"],
+                definition="SUM(a)",
+            ),
+        ]
+        sample_config.objective_functions = {
+            "obj1": ObjectiveFunctionConfig(
+                metric=CustomMetricConfig(
+                    name="metric_objective",
+                    metric_type="aggregate",
+                    input_columns=["b"],
+                    definition="AVG(b)",
+                ),
+            )
+        }
+        sample_config.monitored_tables[sample_discovered_table.full_name] = MonitoredTableConfig(
+            objective_function_ids=["obj1"],
+            custom_metrics=[
+                CustomMetricConfig(
+                    name="metric_objective",
+                    metric_type="derived",
+                    input_columns=["null_count", "count"],
+                    definition="{{null_count}} / {{count}}",
+                ),
+            ],
+        )
+        provisioner = ProfileProvisioner(mock_workspace_client, sample_config)
+
+        metrics = provisioner._build_custom_metrics(sample_discovered_table)
+
+        names = {m.name for m in metrics}
+        assert names == {"metric_default", "metric_objective"}
+
+    def test_serialize_resolved_custom_metrics_merges_objectives_and_table_overrides(
+        self, mock_workspace_client, sample_config, sample_discovered_table
+    ):
+        """Serialized custom metrics should reflect the same three-tier merge behavior."""
+        sample_config.profile_defaults.custom_metrics = [
+            CustomMetricConfig(
+                name="metric_default",
+                metric_type="aggregate",
+                input_columns=["a"],
+                definition="SUM(a)",
+            ),
+        ]
+        sample_config.objective_functions = {
+            "obj1": ObjectiveFunctionConfig(
+                metric=CustomMetricConfig(
+                    name="metric_objective",
+                    metric_type="aggregate",
+                    input_columns=["b"],
+                    definition="AVG(b)",
+                ),
+            )
+        }
+        sample_config.monitored_tables[sample_discovered_table.full_name] = MonitoredTableConfig(
+            objective_function_ids=["obj1"],
+            custom_metrics=[
+                CustomMetricConfig(
+                    name="metric_objective",
+                    metric_type="derived",
+                    input_columns=["null_count", "count"],
+                    definition="{{null_count}} / {{count}}",
+                ),
+            ],
+        )
+        provisioner = ProfileProvisioner(mock_workspace_client, sample_config)
+
+        serialized = provisioner._serialize_resolved_custom_metrics(sample_discovered_table)
+
+        names = {m["name"] for m in serialized}
+        assert names == {"metric_default", "metric_objective"}
 
 
 class TestOrphanCleanup:
@@ -677,7 +788,7 @@ class TestProvisioningEdgeCases:
 
         assert extracted["profile_type"] == "TIMESERIES"
         assert extracted["timestamp_column"] == "event_time"
-        assert extracted["granularity"] == "1 hour"
+        assert extracted["granularities"] == ["1 hour"]
         assert extracted["custom_metrics"][0]["metric_type"] == "aggregate"
 
     def test_has_config_drift_returns_true_on_compare_error(
@@ -688,6 +799,32 @@ class TestProvisioningEdgeCases:
         provisioner._extract_existing_config = MagicMock(side_effect=RuntimeError("bad monitor"))
 
         assert provisioner._has_config_drift(MagicMock(), sample_discovered_table) is True
+
+    def test_has_config_drift_detects_granularities_change(
+        self, mock_workspace_client, sample_timeseries_config
+    ):
+        """Changing configured granularities should be detected as config drift."""
+        table_name = "test_catalog.events.page_views"
+        sample_timeseries_config.monitored_tables[table_name] = MonitoredTableConfig(
+            granularities=["1 day", "1 month"],
+            timestamp_column="event_time",
+        )
+        table = DiscoveredTable(full_name=table_name, tags={})
+        provisioner = ProfileProvisioner(mock_workspace_client, sample_timeseries_config)
+
+        cfg = MagicMock()
+        cfg.inference_log = None
+        cfg.time_series = MagicMock(
+            timestamp_column="event_time",
+            granularities=[AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY],
+        )
+        cfg.slicing_exprs = []
+        cfg.baseline_table_name = None
+        cfg.custom_metrics = []
+        monitor = MagicMock()
+        monitor.data_profiling_config = cfg
+
+        assert provisioner._has_config_drift(monitor, table) is True
 
     def test_resolve_problem_type_auto_detects_numeric_label(
         self, mock_workspace_client, sample_config, sample_discovered_table
@@ -731,6 +868,18 @@ class TestProvisioningEdgeCases:
 
         assert existing is None
 
+    def test_get_existing_monitor_returns_none_when_table_info_missing(
+        self, mock_workspace_client, sample_config, sample_discovered_table
+    ):
+        """Missing table info should short-circuit existing monitor lookup."""
+        provisioner = ProfileProvisioner(mock_workspace_client, sample_config)
+        provisioner._get_table_info = MagicMock(return_value=None)
+
+        existing = provisioner._get_existing_monitor(sample_discovered_table)
+
+        assert existing is None
+        mock_workspace_client.data_quality.get_monitor.assert_not_called()
+
     def test_get_table_name_from_monitor_returns_none_on_error(
         self, mock_workspace_client, sample_config
     ):
@@ -743,6 +892,19 @@ class TestProvisioningEdgeCases:
         table_name = provisioner._get_table_name_from_monitor(monitor)
 
         assert table_name is None
+
+    def test_get_table_name_from_monitor_returns_none_without_object_id(
+        self, mock_workspace_client, sample_config
+    ):
+        """Monitor without object_id should return None without table lookup."""
+        monitor = MagicMock()
+        monitor.object_id = None
+        provisioner = ProfileProvisioner(mock_workspace_client, sample_config)
+
+        table_name = provisioner._get_table_name_from_monitor(monitor)
+
+        assert table_name is None
+        mock_workspace_client.tables.get.assert_not_called()
 
     def test_validate_columns_exist_timeseries_uses_fallback_timestamp(
         self, mock_workspace_client, sample_timeseries_config

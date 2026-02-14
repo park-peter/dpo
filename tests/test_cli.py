@@ -10,7 +10,9 @@ from click.testing import CliRunner
 import dpo as dpo_pkg
 from dpo.cli import cli, validate_policy, validate_workspace
 from dpo.config import (
+    CustomMetricConfig,
     MonitoredTableConfig,
+    ObjectiveFunctionConfig,
     OrchestratorConfig,
     PolicyConfig,
     ProfileConfig,
@@ -139,6 +141,74 @@ class TestValidateCommand:
         data = json.loads(result.output)
         assert data["status"] == "fail"
         assert any(c["check"] == "workspace" for c in data["checks"])
+
+    def test_validate_with_workspace_checks_reports_uc_function_issues(
+        self, runner, valid_config_file, monkeypatch
+    ):
+        """UC function issues should fail validate when workspace checks are enabled."""
+        config = _build_test_config()
+        config.objective_functions = {
+            "obj1": ObjectiveFunctionConfig(
+                uc_function_name="cat.sch.missing_func",
+                metric=CustomMetricConfig(
+                    name="metric_a",
+                    metric_type="aggregate",
+                    input_columns=["a"],
+                    definition="SUM(a)",
+                ),
+            )
+        }
+        monkeypatch.setattr("dpo.cli.load_config", lambda _path: config)
+        monkeypatch.setattr("dpo.cli.validate_workspace", lambda _cfg: [])
+        monkeypatch.setattr(dbsdk, "WorkspaceClient", lambda: MagicMock())
+        monkeypatch.setattr(
+            "dpo.validators.validate_uc_functions",
+            lambda _cfg, _w: [{"check": "uc_function", "message": "not found"}],
+        )
+
+        result = runner.invoke(
+            cli, ["validate", valid_config_file, "--check-workspace", "--format", "json"]
+        )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert any(
+            c["check"] == "uc_functions" and c["status"] == "fail"
+            for c in data["checks"]
+        )
+
+    def test_validate_with_workspace_checks_passes_uc_function_validation(
+        self, runner, valid_config_file, monkeypatch
+    ):
+        """UC function check should pass when validator returns no issues."""
+        config = _build_test_config()
+        config.objective_functions = {
+            "obj1": ObjectiveFunctionConfig(
+                uc_function_name="cat.sch.func",
+                metric=CustomMetricConfig(
+                    name="metric_a",
+                    metric_type="aggregate",
+                    input_columns=["a"],
+                    definition="SUM(a)",
+                ),
+            )
+        }
+        monkeypatch.setattr("dpo.cli.load_config", lambda _path: config)
+        monkeypatch.setattr("dpo.cli.validate_workspace", lambda _cfg: [])
+        monkeypatch.setattr(dbsdk, "WorkspaceClient", lambda: MagicMock())
+        monkeypatch.setattr(
+            "dpo.validators.validate_uc_functions",
+            lambda _cfg, _w: [],
+        )
+
+        result = runner.invoke(
+            cli, ["validate", valid_config_file, "--check-workspace", "--format", "json"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert any(
+            c["check"] == "uc_functions" and c["status"] == "pass"
+            for c in data["checks"]
+        )
 
     def test_validate_handles_schema_file_error(self, runner, valid_config_file, monkeypatch):
         """Schema load errors from loader should map to validation failure."""
