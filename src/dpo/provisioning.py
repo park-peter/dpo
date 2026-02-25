@@ -469,7 +469,22 @@ class ProfileProvisioner:
                     config_hash=config_hash,
                 )
             else:
-                created = self.w.data_quality.create_monitor(monitor=monitor_obj)
+                try:
+                    created = self.w.data_quality.create_monitor(monitor=monitor_obj)
+                except Exception as create_err:
+                    if "already exists" in str(create_err).lower():
+                        logger.warning(
+                            "Monitor already exists for %s but was not detected by "
+                            "get_monitor; treating as no_change",
+                            table.full_name,
+                        )
+                        return ProvisioningResult(
+                            table_name=table.full_name,
+                            action="no_change",
+                            success=True,
+                            config_hash=config_hash,
+                        )
+                    raise
                 logger.info("Created monitor for %s", table.full_name)
 
                 return ProvisioningResult(
@@ -943,8 +958,15 @@ class ProfileProvisioner:
                 )
                 if monitor and getattr(monitor, "monitor_id", None):
                     return monitor
-        except Exception:
-            pass
+                logger.debug(
+                    "get_monitor returned non-standard response for %s: %s",
+                    table.full_name,
+                    monitor,
+                )
+        except Exception as e:
+            logger.debug(
+                "get_monitor failed for %s: %s", table.full_name, e
+            )
         return None
 
     @retry(
