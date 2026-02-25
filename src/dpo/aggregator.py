@@ -252,6 +252,19 @@ class MetricsAggregator:
             if effective_profile_type != "INFERENCE":
                 continue
 
+            label_col = self.config.profile_defaults.label_column
+            pred_col = self.config.profile_defaults.prediction_column
+            if table_cfg:
+                label_col = getattr(table_cfg, "label_column", None) or label_col
+                pred_col = getattr(table_cfg, "prediction_column", None) or pred_col
+            if not (label_col and pred_col):
+                logger.debug(
+                    "Skipping %s from performance view: "
+                    "both prediction_column and label_column required",
+                    table.full_name,
+                )
+                continue
+
             problem_type = self.config.profile_defaults.problem_type
             if table_cfg and getattr(table_cfg, "problem_type", None):
                 problem_type = table_cfg.problem_type
