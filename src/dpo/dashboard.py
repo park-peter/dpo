@@ -770,6 +770,11 @@ class DashboardProvisioner:
         logger.info(f"Deploying dashboard: {name} to {parent_path}")
 
         try:
+            self.w.workspace.mkdirs(parent_path)
+        except Exception:
+            pass
+
+        try:
             existing = self._find_existing_dashboard(name, parent_path)
 
             if existing:
@@ -964,6 +969,11 @@ class DashboardProvisioner:
         }
 
         name = "DPO Executive Rollup"
+
+        try:
+            self.w.workspace.mkdirs(parent_path)
+        except Exception:
+            pass
 
         try:
             existing = self._find_existing_dashboard(name, parent_path)
