@@ -297,12 +297,9 @@ def dry_run(ctx, config_path, output_format):
         click.echo(f"Config error: {e}", err=True)
         sys.exit(EXIT_VALIDATION)
 
-    # Force dry_run mode
-    config.dry_run = True
-
     try:
         from dpo import run_orchestration
-        report = run_orchestration(config)
+        report = run_orchestration(config, dry_run=True)
     except PermissionError as e:
         click.echo(f"Permission error: {e}", err=True)
         sys.exit(EXIT_RUNTIME)
@@ -350,12 +347,9 @@ def run(ctx, config_path, confirm, output_format):
         click.echo(f"Config error: {e}", err=True)
         sys.exit(EXIT_VALIDATION)
 
-    # Force live execution
-    config.dry_run = False
-
     try:
         from dpo import run_orchestration
-        report = run_orchestration(config)
+        report = run_orchestration(config, dry_run=False)
     except PermissionError as e:
         click.echo(f"Permission error: {e}", err=True)
         sys.exit(EXIT_RUNTIME)

@@ -183,7 +183,9 @@ def _successful_tables(
     ]
 
 
-def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
+def run_bulk_provisioning(
+    config: OrchestratorConfig, *, dry_run: bool = True
+) -> OrchestrationReport:
     """Simplified mode: Provision monitors only."""
     from databricks.sdk import WorkspaceClient
 
@@ -205,7 +207,7 @@ def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
     tables = _build_table_list(w, config)
     provisioner = ProfileProvisioner(w, config)
     impact_report = None
-    if config.dry_run:
+    if dry_run:
         results, impact_report = provisioner.dry_run_all(tables)
     else:
         results = provisioner.provision_all(tables)
@@ -213,18 +215,18 @@ def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
     healthy_tables = _successful_tables(tables, results)
 
     monitor_statuses = []
-    if config.wait_for_monitors and not config.dry_run and healthy_tables:
+    if config.wait_for_monitors and not dry_run and healthy_tables:
         monitor_statuses = wait_for_monitors(
             w,
             healthy_tables,
             timeout_seconds=config.wait_timeout_seconds,
             poll_interval=config.wait_poll_interval,
         )
-    elif config.wait_for_monitors and not config.dry_run:
+    elif config.wait_for_monitors and not dry_run:
         logger.warning("No successfully provisioned monitors; skipping status wait")
 
     orphans = []
-    if config.cleanup_orphans and not config.dry_run:
+    if config.cleanup_orphans and not dry_run:
         orphans = provisioner.cleanup_orphans(tables)
 
     coverage_report = None
@@ -247,15 +249,21 @@ def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
     )
 
 
-def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
+def run_orchestration(
+    config: OrchestratorConfig, *, dry_run: bool = True
+) -> OrchestrationReport:
     """Main entry point for DPO orchestration.
+
+    Args:
+        config: Orchestrator configuration (what to monitor).
+        dry_run: Preview changes without creating/updating monitors.
 
     Executes the full pipeline based on config.mode:
     - bulk_provision_only: Discovery + Provisioning + Cleanup only
     - full: Complete pipeline with per-group aggregation/alerting/dashboards
     """
     if config.mode == "bulk_provision_only":
-        return run_bulk_provisioning(config)
+        return run_bulk_provisioning(config, dry_run=dry_run)
 
     from databricks.sdk import WorkspaceClient
 
@@ -289,7 +297,7 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
     provisioner = ProfileProvisioner(w, config)
     impact_report = None
 
-    if config.dry_run:
+    if dry_run:
         results, impact_report = provisioner.dry_run_all(tables)
     else:
         results = provisioner.provision_all(tables)
@@ -298,19 +306,19 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
 
     # 4. Wait for monitors
     monitor_statuses = []
-    if config.wait_for_monitors and not config.dry_run and healthy_tables:
+    if config.wait_for_monitors and not dry_run and healthy_tables:
         monitor_statuses = wait_for_monitors(
             w,
             healthy_tables,
             timeout_seconds=config.wait_timeout_seconds,
             poll_interval=config.wait_poll_interval,
         )
-    elif config.wait_for_monitors and not config.dry_run:
+    elif config.wait_for_monitors and not dry_run:
         logger.warning("No healthy tables available; skipping aggregation/alerting/dashboard steps")
 
     # 5. Orphan cleanup
     orphans = []
-    if config.cleanup_orphans and not config.dry_run:
+    if config.cleanup_orphans and not dry_run:
         orphans = provisioner.cleanup_orphans(tables)
 
     coverage_report = None
@@ -323,7 +331,7 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
     aggregator = MetricsAggregator(w, config)
     views_by_group = {}
 
-    if not config.dry_run and healthy_tables:
+    if not dry_run and healthy_tables:
         views_by_group = aggregator.create_unified_views_by_group(
             healthy_tables,
             output_schema,
@@ -337,13 +345,13 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
 
     # 7. Alerting
     alerts_by_group = {}
-    if config.alerting.enable_aggregated_alerts and not config.dry_run and views_by_group:
+    if config.alerting.enable_aggregated_alerts and not dry_run and views_by_group:
         alerter = AlertProvisioner(w, config)
         alerts_by_group = alerter.create_alerts_by_group(views_by_group, catalog)
 
     # 8. Performance views
     perf_view: Optional[str] = None
-    if not config.dry_run and healthy_tables:
+    if not dry_run and healthy_tables:
         try:
             perf_view = f"{output_schema}.unified_performance_metrics"
             aggregator.create_unified_performance_view(healthy_tables, perf_view)
@@ -354,7 +362,7 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
     # 9. Dashboards
     dashboards_by_group = {}
     rollup_dashboard_id = None
-    if config.deploy_aggregated_dashboard and not config.dry_run and views_by_group:
+    if config.deploy_aggregated_dashboard and not dry_run and views_by_group:
         dashboard_provisioner = DashboardProvisioner(w, config)
         dashboards_by_group = dashboard_provisioner.deploy_dashboards_by_group(
             views_by_group,

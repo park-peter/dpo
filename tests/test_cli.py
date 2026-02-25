@@ -260,7 +260,7 @@ class TestRunCommand:
         report.to_dict.return_value = {"monitors_failed": 0}
 
         monkeypatch.setattr("dpo.cli.load_config", lambda _path: config)
-        monkeypatch.setattr(dpo_pkg, "run_orchestration", lambda _cfg: report)
+        monkeypatch.setattr(dpo_pkg, "run_orchestration", lambda _cfg, **kw: report)
 
         result = runner.invoke(
             cli, ["run", valid_config_file, "--confirm", "--format", "json"]
@@ -270,7 +270,6 @@ class TestRunCommand:
         assert data["command"] == "run"
         assert data["status"] == "success"
         assert data["confirmed"] is True
-        assert config.dry_run is False
 
     def test_run_returns_runtime_exit_code_when_monitors_fail(
         self, runner, valid_config_file, monkeypatch
@@ -290,7 +289,7 @@ class TestRunCommand:
         report.dashboard_ids = {}
 
         monkeypatch.setattr("dpo.cli.load_config", lambda _path: config)
-        monkeypatch.setattr(dpo_pkg, "run_orchestration", lambda _cfg: report)
+        monkeypatch.setattr(dpo_pkg, "run_orchestration", lambda _cfg, **kw: report)
 
         result = runner.invoke(cli, ["run", valid_config_file, "--confirm"])
         assert result.exit_code == 3
@@ -301,7 +300,7 @@ class TestRunCommand:
         """Unhandled runtime errors should return runtime exit code."""
         config = _build_test_config()
 
-        def _raise_runtime(_cfg):
+        def _raise_runtime(_cfg, **kw):
             raise RuntimeError("boom")
 
         monkeypatch.setattr("dpo.cli.load_config", lambda _path: config)
@@ -315,7 +314,7 @@ class TestRunCommand:
         """Permission errors should return runtime exit code with clear message."""
         config = _build_test_config()
 
-        def _raise_permission(_cfg):
+        def _raise_permission(_cfg, **kw):
             raise PermissionError("denied")
 
         monkeypatch.setattr("dpo.cli.load_config", lambda _path: config)
@@ -353,7 +352,7 @@ class TestRunCommand:
         report.dashboard_ids = {"default": "dash-1"}
 
         monkeypatch.setattr("dpo.cli.load_config", lambda _path: config)
-        monkeypatch.setattr(dpo_pkg, "run_orchestration", lambda _cfg: report)
+        monkeypatch.setattr(dpo_pkg, "run_orchestration", lambda _cfg, **kw: report)
 
         result = runner.invoke(cli, ["run", valid_config_file, "--confirm"])
         assert result.exit_code == 0
@@ -382,7 +381,7 @@ class TestDryRunCommand:
         report.impact_report = impact
 
         monkeypatch.setattr("dpo.cli.load_config", lambda _path: config)
-        monkeypatch.setattr(dpo_pkg, "run_orchestration", lambda _cfg: report)
+        monkeypatch.setattr(dpo_pkg, "run_orchestration", lambda _cfg, **kw: report)
 
         result = runner.invoke(
             cli, ["dry-run", valid_config_file, "--format", "json"]
@@ -392,7 +391,6 @@ class TestDryRunCommand:
         assert data["command"] == "dry-run"
         assert data["status"] == "success"
         assert data["summary"]["tables_discovered"] == 1
-        assert config.dry_run is True
 
     @pytest.mark.parametrize(
         "exc_type, expected",
@@ -407,7 +405,7 @@ class TestDryRunCommand:
         """Dry-run maps runtime exceptions to runtime exit code."""
         config = _build_test_config()
 
-        def _raise(_cfg):
+        def _raise(_cfg, **kw):
             raise exc_type("failure")
 
         monkeypatch.setattr("dpo.cli.load_config", lambda _path: config)

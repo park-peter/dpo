@@ -219,9 +219,8 @@ stale_monitor_days: 30
 # Operational Settings
 # =============================================================================
 
-# Dry run mode: Preview changes without executing
-# Recommended: always run with dry_run: true first to review the Impact Report
-dry_run: true
+# Dry run mode: Use `dpo dry-run <config>` to preview, `dpo run <config> --confirm` to execute.
+# dry_run is a runtime flag, not a config property.
 
 # Orphan cleanup: Delete monitors for tables no longer in monitored_tables or tagged
 cleanup_orphans: false

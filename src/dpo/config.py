@@ -401,7 +401,11 @@ class OrchestratorConfig(BaseModel):
         None,
         description="Policy checks applied during validation (naming, tags, forbidden patterns)",
     )
-    dry_run: bool = Field(False, description="Preview changes only")
+    dry_run: Optional[bool] = Field(
+        None,
+        description="Deprecated: pass dry_run to run_orchestration() instead. Ignored at runtime.",
+        exclude=True,
+    )
     cleanup_orphans: bool = Field(
         False, description="Delete monitors for untagged tables"
     )
