@@ -917,21 +917,32 @@ class ProfileProvisioner:
         return 0
 
     def _get_monitor_count(self) -> int:
-        """Get current number of monitors."""
+        """Get current number of monitors.
+
+        Falls back to 0 since data_quality.list_monitor() is unimplemented
+        in the current SDK/API. Quota enforcement is best-effort.
+        """
         try:
             monitors = list(self.w.data_quality.list_monitor())
             return len(monitors)
         except Exception:
+            logger.debug("list_monitor unavailable; skipping quota check")
             return 0
 
     def _get_existing_monitor(self, table: DiscoveredTable) -> Optional[Monitor]:
-        """Check if a monitor already exists for this table."""
+        """Check if a monitor already exists for this table.
+
+        Validates the returned object has a monitor_id and data_profiling_config,
+        since get_monitor may return a non-exception "not found" response.
+        """
         try:
             table_info = self._get_table_info(table.full_name)
             if table_info:
-                return self.w.data_quality.get_monitor(
+                monitor = self.w.data_quality.get_monitor(
                     object_type="table", object_id=table_info.table_id
                 )
+                if monitor and getattr(monitor, "monitor_id", None):
+                    return monitor
         except Exception:
             pass
         return None
@@ -973,27 +984,29 @@ class ProfileProvisioner:
 
         try:
             all_monitors = list(self.w.data_quality.list_monitor())
+        except Exception:
+            logger.warning(
+                "list_monitor unavailable (API unimplemented); skipping orphan cleanup"
+            )
+            return orphans
 
-            for monitor in all_monitors:
-                table_name = self._get_table_name_from_monitor(monitor)
-                if table_name and table_name not in discovered_names:
-                    orphans.append(table_name)
+        for monitor in all_monitors:
+            table_name = self._get_table_name_from_monitor(monitor)
+            if table_name and table_name not in discovered_names:
+                orphans.append(table_name)
 
-                    if self.config.cleanup_orphans:
-                        logger.warning("Deleting orphaned monitor: %s", table_name)
-                        try:
-                            self.w.data_quality.delete_monitor(
-                                object_type="table", object_id=monitor.object_id
-                            )
-                        except Exception as e:
-                            logger.error("Failed to delete orphaned monitor: %s", e)
-                    else:
-                        logger.info(
-                            "Orphaned monitor found (not deleted): %s", table_name
+                if self.config.cleanup_orphans:
+                    logger.warning("Deleting orphaned monitor: %s", table_name)
+                    try:
+                        self.w.data_quality.delete_monitor(
+                            object_type="table", object_id=monitor.object_id
                         )
-
-        except Exception as e:
-            logger.error("Failed to list monitors for orphan cleanup: %s", e)
+                    except Exception as e:
+                        logger.error("Failed to delete orphaned monitor: %s", e)
+                else:
+                    logger.info(
+                        "Orphaned monitor found (not deleted): %s", table_name
+                    )
 
         return orphans
 
