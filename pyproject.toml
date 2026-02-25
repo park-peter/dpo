@@ -8,7 +8,7 @@ version = "0.3.0rc1"
 description = "Data Profiling Orchestrator - Automate Databricks Data Profiling at scale"
 readme = "README.md"
 license = {text = "GPL-3.0-only"}
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 authors = [
     {name = "Databricks Solution Accelerators"}
 ]
@@ -19,7 +19,6 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "databricks-sdk==0.88.0",
@@ -53,7 +52,7 @@ include = ["dpo*"]
 
 [tool.black]
 line-length = 120
-target-version = ['py311', 'py312']
+target-version = ['py312']
 
 [tool.ruff]
 line-length = 120
