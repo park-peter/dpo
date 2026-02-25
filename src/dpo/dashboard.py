@@ -14,6 +14,17 @@ from databricks.sdk.service.dashboards import Dashboard
 from dpo.config import OrchestratorConfig
 from dpo.coverage import CoverageReport
 
+
+def _ensure_query_names(template: dict) -> dict:
+    """Ensure every query entry in widgets has a 'name' field (required by Lakeview API)."""
+    for page in template.get("pages", []):
+        for item in page.get("layout", []):
+            widget = item.get("widget", {})
+            for i, q in enumerate(widget.get("queries", [])):
+                if "name" not in q:
+                    q["name"] = f"{widget.get('name', 'query')}_{i}"
+    return template
+
 logger = logging.getLogger(__name__)
 
 
@@ -739,6 +750,7 @@ class DashboardProvisioner:
             row_count_min=self.config.alerting.row_count_min,
         )
         template["displayName"] = name
+        _ensure_query_names(template)
 
         # Derive view names from the drift view when not provided
         profile_view = unified_profile_view or unified_drift_view.replace(
@@ -969,6 +981,7 @@ class DashboardProvisioner:
         }
 
         name = "DPO Executive Rollup"
+        _ensure_query_names(template)
 
         try:
             self.w.workspace.mkdirs(parent_path)
