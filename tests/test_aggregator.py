@@ -163,6 +163,7 @@ class TestUnifiedPerformanceView:
         assert "CREATE OR REPLACE VIEW" in ddl
         assert "column_name = ':table'" in ddl
         assert "precision.weighted as precision_weighted" in ddl
+        assert "CAST(NULL AS DOUBLE) as mean_squared_error" in ddl
         assert "source_table_name" in ddl
 
     def test_create_unified_performance_view_empty_when_no_inference_tables(

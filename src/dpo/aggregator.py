@@ -61,21 +61,30 @@ class MetricsAggregator:
         "slice_value",
     ]
 
-    INFERENCE_PERFORMANCE_COLUMNS = [
+    PERFORMANCE_BASE_COLUMNS = [
         "window.start as window_start",
         "window.end as window_end",
         "granularity",
         "column_name",
+    ]
+
+    CLASSIFICATION_COLUMNS = [
         "accuracy_score",
         "log_loss",
         "precision.weighted as precision_weighted",
         "recall.weighted as recall_weighted",
         "f1_score.weighted as f1_weighted",
+    ]
+
+    REGRESSION_COLUMNS = [
         "mean_squared_error",
         "root_mean_squared_error",
         "mean_average_error",
         "mean_absolute_percentage_error",
         "r2_score",
+    ]
+
+    PERFORMANCE_TAIL_COLUMNS = [
         "slice_key",
         "slice_value",
     ]
@@ -227,7 +236,6 @@ class MetricsAggregator:
         self._ensure_output_schema(output_view)
 
         view_type = "MATERIALIZED VIEW" if use_materialized else "VIEW"
-        columns_sql = ", ".join(self.INFERENCE_PERFORMANCE_COLUMNS)
 
         union_parts = []
         for table in discovered_tables:
@@ -239,8 +247,32 @@ class MetricsAggregator:
             if effective_profile_type != "INFERENCE":
                 continue
 
+            problem_type = self.config.profile_defaults.problem_type
+            if table_cfg and getattr(table_cfg, "problem_type", None):
+                problem_type = table_cfg.problem_type
+            is_regression = problem_type == "PROBLEM_TYPE_REGRESSION"
+
+            if is_regression:
+                metric_cols = [
+                    f"CAST(NULL AS DOUBLE) as {c.split(' as ')[-1] if ' as ' in c else c}"
+                    for c in self.CLASSIFICATION_COLUMNS
+                ] + self.REGRESSION_COLUMNS
+            else:
+                metric_cols = self.CLASSIFICATION_COLUMNS + [
+                    f"CAST(NULL AS DOUBLE) as {c}" for c in self.REGRESSION_COLUMNS
+                ]
+
+            columns_sql = ", ".join(
+                self.PERFORMANCE_BASE_COLUMNS
+                + metric_cols
+                + self.PERFORMANCE_TAIL_COLUMNS
+            )
+
             owner = table.owner or table.tags.get("owner", "unknown")
-            profile_table = f"{self.catalog}.{self.output_schema}." f"{table.table_name}_profile_metrics"
+            profile_table = (
+                f"{self.catalog}.{self.output_schema}."
+                f"{table.table_name}_profile_metrics"
+            )
 
             union_parts.append(
                 f"""
