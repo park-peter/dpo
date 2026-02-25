@@ -221,26 +221,40 @@ class CoverageAnalyzer:
         monitors: Dict[str, str] = {}
         table_names_by_id: Dict[str, str] = {}
         catalog_prefix = f"{self.catalog}."
+
+        # Try list_monitor first (may be unimplemented in current API).
+        # Fall back to probing each catalog table individually via get_monitor.
         try:
             for monitor in self.w.data_quality.list_monitor():
                 obj_id = getattr(monitor, "object_id", None)
                 if not obj_id:
                     continue
-                # Resolve table to check catalog membership
                 try:
                     info = self.w.tables.get(table_id=obj_id)
                     if info and info.full_name and info.full_name.startswith(catalog_prefix):
                         monitors[obj_id] = getattr(monitor, "monitor_id", obj_id)
                         table_names_by_id[obj_id] = info.full_name
-                    else:
-                        logger.debug(
-                            "Skipping monitor %s (table %s outside catalog %s)",
-                            obj_id, getattr(info, "full_name", "unknown"), self.catalog,
-                        )
                 except Exception:
                     logger.debug("Could not resolve table for monitor %s; skipping", obj_id)
-        except Exception as e:
-            logger.warning("Failed to list monitors: %s", e)
+            return monitors, table_names_by_id
+        except Exception:
+            logger.info(
+                "list_monitor unavailable; falling back to per-table get_monitor"
+            )
+
+        for table_name in self._list_catalog_tables():
+            try:
+                info = self.w.tables.get(full_name=table_name)
+                if not info:
+                    continue
+                monitor = self.w.data_quality.get_monitor(
+                    object_type="table", object_id=info.table_id
+                )
+                monitors[info.table_id] = getattr(monitor, "monitor_id", info.table_id)
+                table_names_by_id[info.table_id] = table_name
+            except Exception:
+                pass
+
         return monitors, table_names_by_id
 
     def _resolve_table_names(

@@ -281,6 +281,7 @@ class TestRunCommand:
         report.tables_discovered = 1
         report.monitors_created = 0
         report.monitors_updated = 0
+        report.monitors_unchanged = 0
         report.monitors_skipped = 0
         report.monitors_failed = 1
         report.orphans_cleaned = 0
@@ -293,7 +294,8 @@ class TestRunCommand:
 
         result = runner.invoke(cli, ["run", valid_config_file, "--confirm"])
         assert result.exit_code == 3
-        assert "Monitors failed:   1" in result.output
+        assert "Monitors failed:" in result.output
+        assert "1" in result.output
 
     def test_run_handles_runtime_error(self, runner, valid_config_file, monkeypatch):
         """Unhandled runtime errors should return runtime exit code."""

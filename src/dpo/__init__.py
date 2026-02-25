@@ -74,6 +74,7 @@ class OrchestrationReport:
     tables_discovered: int
     monitors_created: int
     monitors_updated: int
+    monitors_unchanged: int
     monitors_skipped: int
     monitors_failed: int
     orphans_cleaned: int
@@ -96,6 +97,7 @@ class OrchestrationReport:
             "tables_discovered": self.tables_discovered,
             "monitors_created": self.monitors_created,
             "monitors_updated": self.monitors_updated,
+            "monitors_unchanged": self.monitors_unchanged,
             "monitors_skipped": self.monitors_skipped,
             "monitors_failed": self.monitors_failed,
             "orphans_cleaned": self.orphans_cleaned,
@@ -235,6 +237,7 @@ def run_bulk_provisioning(config: OrchestratorConfig) -> OrchestrationReport:
         tables_discovered=len(tables),
         monitors_created=sum(1 for r in results if r.action == "created"),
         monitors_updated=sum(1 for r in results if r.action == "updated"),
+        monitors_unchanged=sum(1 for r in results if r.action == "no_change"),
         monitors_skipped=sum(1 for r in results if "skipped" in r.action),
         monitors_failed=sum(1 for r in results if r.action == "failed"),
         orphans_cleaned=len(orphans),
@@ -377,6 +380,7 @@ def run_orchestration(config: OrchestratorConfig) -> OrchestrationReport:
         tables_discovered=len(tables),
         monitors_created=sum(1 for r in results if r.action == "created"),
         monitors_updated=sum(1 for r in results if r.action == "updated"),
+        monitors_unchanged=sum(1 for r in results if r.action == "no_change"),
         monitors_skipped=sum(1 for r in results if "skipped" in r.action),
         monitors_failed=sum(1 for r in results if r.action == "failed"),
         orphans_cleaned=len(orphans),
