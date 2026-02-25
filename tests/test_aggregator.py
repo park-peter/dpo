@@ -7,7 +7,6 @@ import pytest
 from dpo.aggregator import MetricsAggregator
 from dpo.discovery import DiscoveredTable
 
-
 class TestMetricsAggregator:
     """Tests for MetricsAggregator class."""
 
@@ -20,7 +19,6 @@ class TestUnifiedDriftView:
     ):
         """Test drift view DDL generation."""
         aggregator = MetricsAggregator(mock_workspace_client, sample_config)
-
         ddl = aggregator._generate_unified_drift_view_ddl(
             sample_discovered_tables,
             "catalog.schema.unified_drift",
@@ -211,8 +209,8 @@ class TestHelperQueries:
         query = aggregator.get_drift_summary_query("catalog.schema.unified_drift")
 
         assert "source_table_name" in query
-        assert "MAX(js_divergence)" in query
-        assert "AVG(js_divergence)" in query
+        assert "MAX(js_distance)" in query
+        assert "AVG(js_distance)" in query
         assert "GROUP BY" in query
         assert "ORDER BY" in query
         assert "LIMIT 20" in query
@@ -227,7 +225,7 @@ class TestHelperQueries:
         )
 
         assert "column_name" in query
-        assert "js_divergence" in query
+        assert "js_distance" in query
         assert "chi_square_statistic" in query
         assert "drift_type" in query
         assert "WHERE source_table_name" in query

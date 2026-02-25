@@ -48,7 +48,7 @@ class TestDriftAlert:
         alert_v2 = call_args.kwargs.get("alert")
         query_sql = alert_v2.query_text
 
-        assert "js_divergence" in query_sql
+        assert "js_distance" in query_sql
         assert "chi_square_statistic" in query_sql
         assert "drift_type" in query_sql
         assert "CRITICAL" in query_sql
@@ -190,13 +190,13 @@ class TestCustomAlertDDL:
         ddl = alerter.generate_custom_alert_ddl(
             unified_view="catalog.schema.unified_drift",
             table_name="catalog.schema.predictions",
-            business_rule="js_divergence > 0.3 AND column_name = 'revenue'",
+            business_rule="js_distance > 0.3 AND column_name = 'revenue'",
             alert_name="Revenue Drift Alert",
         )
 
         assert "Revenue Drift Alert" in ddl
         assert "PAUSED" in ddl
-        assert "js_divergence > 0.3" in ddl
+        assert "js_distance > 0.3" in ddl
         assert "column_name = 'revenue'" in ddl
 
     def test_generate_custom_alert_ddl_default_name(
@@ -208,7 +208,7 @@ class TestCustomAlertDDL:
         ddl = alerter.generate_custom_alert_ddl(
             unified_view="catalog.schema.unified_drift",
             table_name="catalog.schema.my_table",
-            business_rule="js_divergence > 0.5",
+            business_rule="js_distance > 0.5",
         )
 
         assert "Custom Alert - my_table" in ddl
@@ -311,7 +311,7 @@ class TestAlertStatusQuery:
             "GREATEST(0.1, COALESCE(drift_threshold, 0.05) / 2.0))"
         )
         assert warning_expr in query_sql
-        assert f"WHERE js_divergence >= {warning_expr}" in query_sql
+        assert f"WHERE js_distance >= {warning_expr}" in query_sql
 
 
 class TestSubscriptionResolution:
