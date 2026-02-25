@@ -699,6 +699,25 @@ class TestProvisioningEdgeCases:
         assert result.action == "skipped_quota"
         assert result.success is False
 
+    def test_provision_single_handles_already_exists_as_no_change(
+        self, mock_workspace_client, sample_config, sample_discovered_table
+    ):
+        """'Already exists' from create_monitor should map to no_change, not failed."""
+        provisioner = ProfileProvisioner(mock_workspace_client, sample_config)
+        provisioner._get_table_info = MagicMock(return_value=MagicMock(table_id="table_123"))
+        provisioner._get_schema_info = MagicMock(return_value=MagicMock(schema_id="schema_123"))
+        provisioner._validate_slicing_columns = MagicMock(return_value=[])
+        provisioner._get_existing_monitor = MagicMock(return_value=None)
+        provisioner._build_data_profiling_config = MagicMock(return_value=DataProfilingConfig(output_schema_id="schema_123"))
+        mock_workspace_client.data_quality.create_monitor.side_effect = RuntimeError(
+            "Already exists Monitor with ID: /metastores:abc/tables:123/"
+        )
+
+        result = provisioner._provision_single(sample_discovered_table)
+
+        assert result.action == "no_change"
+        assert result.success is True
+
     def test_provision_all_converts_worker_exceptions_to_failed_results(
         self, mock_workspace_client, sample_config, sample_discovered_tables
     ):
