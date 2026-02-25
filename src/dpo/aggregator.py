@@ -24,37 +24,35 @@ class MetricsAggregator:
     data quality and drift monitoring.
 
     Features:
-    - Explicit column selection (avoids SELECT * schema mismatch issues)
     - Materialized View support for performance
     - UC tag metadata injection for business unit filtering
     - Support for BASELINE and CONSECUTIVE drift types
     """
 
-    # Standard columns for drift_metrics tables with chi_square for categorical
     STANDARD_DRIFT_COLUMNS = [
-        "window_start",
-        "window_end",
+        "window.start as window_start",
+        "window.end as window_end",
         "column_name",
-        "CAST(js_divergence AS DOUBLE) as js_divergence",
-        "CAST(ks_statistic AS DOUBLE) as ks_statistic",
+        "CAST(js_distance AS DOUBLE) as js_distance",
+        "CAST(ks_test.statistic AS DOUBLE) as ks_statistic",
         "CAST(wasserstein_distance AS DOUBLE) as wasserstein_distance",
-        "CAST(chi_square_statistic AS DOUBLE) as chi_square_statistic",
+        "CAST(chi_squared_test.statistic AS DOUBLE) as chi_square_statistic",
+        "CAST(population_stability_index AS DOUBLE) as psi",
         "drift_type",
         "granularity",
         "slice_key",
         "slice_value",
     ]
 
-    # Standard columns for profile_metrics tables
     STANDARD_PROFILE_COLUMNS = [
-        "window_start",
-        "window_end",
+        "window.start as window_start",
+        "window.end as window_end",
         "column_name",
         "CAST(count AS BIGINT) as record_count",
-        "CAST(null_count AS BIGINT) as null_count",
+        "CAST(num_nulls AS BIGINT) as null_count",
         "CAST(percent_null AS DOUBLE) as null_rate",
         "CAST(distinct_count AS BIGINT) as distinct_count",
-        "CAST(mean AS DOUBLE) as mean",
+        "CAST(avg AS DOUBLE) as mean",
         "CAST(stddev AS DOUBLE) as stddev",
         "CAST(min AS DOUBLE) as min_value",
         "CAST(max AS DOUBLE) as max_value",
@@ -64,8 +62,8 @@ class MetricsAggregator:
     ]
 
     INFERENCE_PERFORMANCE_COLUMNS = [
-        "window_start",
-        "window_end",
+        "window.start as window_start",
+        "window.end as window_end",
         "granularity",
         "column_name",
         "accuracy_score",
@@ -82,9 +80,7 @@ class MetricsAggregator:
         "slice_value",
     ]
 
-    def __init__(
-        self, workspace_client: WorkspaceClient, config: OrchestratorConfig
-    ):
+    def __init__(self, workspace_client: WorkspaceClient, config: OrchestratorConfig):
         self.w = workspace_client
         self.config = config
         self.catalog = config.catalog_name
@@ -134,9 +130,7 @@ class MetricsAggregator:
             use_materialized = self._supports_materialized_views()
 
         self._ensure_output_schema(output_view)
-        ddl = self._generate_unified_drift_view_ddl(
-            discovered_tables, output_view, use_materialized
-        )
+        ddl = self._generate_unified_drift_view_ddl(discovered_tables, output_view, use_materialized)
 
         logger.info(
             "Creating unified drift view: %s (materialized=%s)",
@@ -182,9 +176,7 @@ class MetricsAggregator:
             use_materialized = self._supports_materialized_views()
 
         self._ensure_output_schema(output_view)
-        ddl = self._generate_unified_profile_view_ddl(
-            discovered_tables, output_view, use_materialized
-        )
+        ddl = self._generate_unified_profile_view_ddl(discovered_tables, output_view, use_materialized)
 
         logger.info(
             "Creating unified profile view: %s (materialized=%s)",
@@ -248,19 +240,18 @@ class MetricsAggregator:
                 continue
 
             owner = table.owner or table.tags.get("owner", "unknown")
-            profile_table = (
-                f"{self.catalog}.{self.output_schema}."
-                f"{table.table_name}_profile_metrics"
-            )
+            profile_table = f"{self.catalog}.{self.output_schema}." f"{table.table_name}_profile_metrics"
 
-            union_parts.append(f"""
+            union_parts.append(
+                f"""
                 SELECT
                     {columns_sql},
                     {self._sql_literal(table.full_name)} as source_table_name,
                     {self._sql_literal(owner)} as owner
                 FROM {profile_table}
                 WHERE column_name = ':table'
-            """)
+            """
+            )
 
         if not union_parts:
             ddl = f"""
@@ -287,10 +278,7 @@ class MetricsAggregator:
             WHERE 1=0
             """
         else:
-            ddl = (
-                f"CREATE OR REPLACE {view_type} {output_view} AS "
-                + " UNION ALL ".join(union_parts)
-            )
+            ddl = f"CREATE OR REPLACE {view_type} {output_view} AS " + " UNION ALL ".join(union_parts)
 
         logger.info(
             "Creating unified performance view: %s (materialized=%s)",
@@ -335,11 +323,10 @@ class MetricsAggregator:
             lineage_url = table.lineage_url or ""
             drift_threshold = self._resolve_drift_threshold(table)
 
-            drift_table = (
-                f"{self.catalog}.{self.output_schema}.{table.table_name}_drift_metrics"
-            )
+            drift_table = f"{self.catalog}.{self.output_schema}.{table.table_name}_drift_metrics"
 
-            union_parts.append(f"""
+            union_parts.append(
+                f"""
                 SELECT
                     {columns_sql},
                     {self._sql_literal(table.full_name)} as source_table_name,
@@ -350,7 +337,8 @@ class MetricsAggregator:
                     {self._sql_literal(lineage_url)} as lineage_url,
                     CAST({drift_threshold} AS DOUBLE) as drift_threshold
                 FROM {drift_table}
-            """)
+            """
+            )
 
         if not union_parts:
             return f"""
@@ -359,10 +347,11 @@ class MetricsAggregator:
                 CAST(NULL AS TIMESTAMP) as window_start,
                 CAST(NULL AS TIMESTAMP) as window_end,
                 CAST(NULL AS STRING) as column_name,
-                CAST(NULL AS DOUBLE) as js_divergence,
+                CAST(NULL AS DOUBLE) as js_distance,
                 CAST(NULL AS DOUBLE) as ks_statistic,
                 CAST(NULL AS DOUBLE) as wasserstein_distance,
                 CAST(NULL AS DOUBLE) as chi_square_statistic,
+                CAST(NULL AS DOUBLE) as psi,
                 CAST(NULL AS STRING) as drift_type,
                 CAST(NULL AS STRING) as granularity,
                 CAST(NULL AS STRING) as slice_key,
@@ -377,10 +366,7 @@ class MetricsAggregator:
             WHERE 1=0
             """
 
-        return (
-            f"CREATE OR REPLACE {view_type} {output_view} AS "
-            + " UNION ALL ".join(union_parts)
-        )
+        return f"CREATE OR REPLACE {view_type} {output_view} AS " + " UNION ALL ".join(union_parts)
 
     def _generate_unified_profile_view_ddl(
         self,
@@ -400,12 +386,10 @@ class MetricsAggregator:
             runbook_url = table.runbook_url or ""
             lineage_url = table.lineage_url or ""
 
-            profile_table = (
-                f"{self.catalog}.{self.output_schema}."
-                f"{table.table_name}_profile_metrics"
-            )
+            profile_table = f"{self.catalog}.{self.output_schema}." f"{table.table_name}_profile_metrics"
 
-            union_parts.append(f"""
+            union_parts.append(
+                f"""
                 SELECT
                     {columns_sql},
                     {self._sql_literal(table.full_name)} as source_table_name,
@@ -415,7 +399,8 @@ class MetricsAggregator:
                     {self._sql_literal(runbook_url)} as runbook_url,
                     {self._sql_literal(lineage_url)} as lineage_url
                 FROM {profile_table}
-            """)
+            """
+            )
 
         if not union_parts:
             return f"""
@@ -444,25 +429,16 @@ class MetricsAggregator:
             WHERE 1=0
             """
 
-        return (
-            f"CREATE OR REPLACE {view_type} {output_view} AS "
-            + " UNION ALL ".join(union_parts)
-        )
+        return f"CREATE OR REPLACE {view_type} {output_view} AS " + " UNION ALL ".join(union_parts)
 
     def _supports_materialized_views(self) -> bool:
         """Check if workspace has Serverless SQL enabled."""
         try:
             warehouses = list(self.w.warehouses.list())
-            supports = any(
-                getattr(wh, "enable_serverless_compute", False)
-                for wh in warehouses
-            )
+            supports = any(getattr(wh, "enable_serverless_compute", False) for wh in warehouses)
 
             if not supports:
-                logger.warning(
-                    "Materialized Views not available. "
-                    "Dashboard may be slow with 100+ tables."
-                )
+                logger.warning("Materialized Views not available. " "Dashboard may be slow with 100+ tables.")
 
             return supports
 
@@ -501,11 +477,11 @@ class MetricsAggregator:
             department,
             owner,
             COUNT(*) as drift_events,
-            MAX(js_divergence) as max_drift,
-            AVG(js_divergence) as avg_drift,
+            MAX(js_distance) as max_drift,
+            AVG(js_distance) as avg_drift,
             MAX(window_end) as last_drift_time
         FROM {unified_view}
-        WHERE js_divergence >= 0.1
+        WHERE js_distance >= 0.1
         GROUP BY source_table_name, department, owner
         ORDER BY max_drift DESC
         LIMIT 20
@@ -526,14 +502,14 @@ class MetricsAggregator:
             column_name,
             window_start,
             window_end,
-            js_divergence,
+            js_distance,
             ks_statistic,
             wasserstein_distance,
             chi_square_statistic,
             drift_type
         FROM {unified_view}
         WHERE source_table_name = '{table_name}'
-        ORDER BY window_end DESC, js_divergence DESC
+        ORDER BY window_end DESC, js_distance DESC
         """
 
     def get_data_quality_summary_query(self, unified_profile_view: str) -> str:
@@ -595,9 +571,7 @@ class MetricsAggregator:
             self.create_unified_profile_view(tables, profile_view)
 
             results[group_name] = (drift_view, profile_view)
-            logger.info(
-                f"Created unified views for group '{group_name}': {drift_view}, {profile_view}"
-            )
+            logger.info(f"Created unified views for group '{group_name}': {drift_view}, {profile_view}")
 
         return results
 
@@ -658,9 +632,7 @@ class MetricsAggregator:
                                 dropped.append(full_view_name)
                                 logger.info(f"Dropped stale view: {full_view_name}")
                             except Exception as e:
-                                logger.warning(
-                                    f"Failed to drop stale view {full_view_name}: {e}"
-                                )
+                                logger.warning(f"Failed to drop stale view {full_view_name}: {e}")
         except Exception as e:
             logger.warning(f"Failed to list views for cleanup: {e}")
 

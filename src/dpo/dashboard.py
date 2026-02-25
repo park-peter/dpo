@@ -144,14 +144,14 @@ def _build_dashboard_template(
                                         {
                                             "name": "critical_alerts",
                                             "expression": (
-                                                f"COUNT(CASE WHEN `js_divergence` >= COALESCE(`drift_threshold`, {drift_threshold}) THEN 1 END)"
+                                                f"COUNT(CASE WHEN `js_distance` >= COALESCE(`drift_threshold`, {drift_threshold}) THEN 1 END)"
                                             ),
                                         },
                                         {
                                             "name": "warning_alerts",
                                             "expression": (
-                                                f"COUNT(CASE WHEN `js_divergence` >= LEAST(COALESCE(`drift_threshold`, {drift_threshold}), GREATEST(0.1, COALESCE(`drift_threshold`, {drift_threshold}) / 2.0)) "
-                                                f"AND `js_divergence` < COALESCE(`drift_threshold`, {drift_threshold}) THEN 1 END)"
+                                                f"COUNT(CASE WHEN `js_distance` >= LEAST(COALESCE(`drift_threshold`, {drift_threshold}), GREATEST(0.1, COALESCE(`drift_threshold`, {drift_threshold}) / 2.0)) "
+                                                f"AND `js_distance` < COALESCE(`drift_threshold`, {drift_threshold}) THEN 1 END)"
                                             ),
                                         },
                                     ],
@@ -175,8 +175,8 @@ def _build_dashboard_template(
                                     "datasetName": "unified_drift",
                                     "fields": [
                                         {"name": "window_end", "expression": "`window_end`"},
-                                        {"name": "avg_drift", "expression": "AVG(`js_divergence`)"},
-                                        {"name": "max_drift", "expression": "MAX(`js_divergence`)"},
+                                        {"name": "avg_drift", "expression": "AVG(`js_distance`)"},
+                                        {"name": "max_drift", "expression": "MAX(`js_distance`)"},
                                     ],
                                     "disaggregated": False,
                                 }
@@ -203,7 +203,7 @@ def _build_dashboard_template(
                                         {"name": "source_table_name", "expression": "`source_table_name`"},
                                         {"name": "department", "expression": "`department`"},
                                         {"name": "owner", "expression": "`owner`"},
-                                        {"name": "max_drift", "expression": "MAX(`js_divergence`)"},
+                                        {"name": "max_drift", "expression": "MAX(`js_distance`)"},
                                         {"name": "drift_count", "expression": "COUNT(*)"},
                                     ],
                                     "disaggregated": False,
@@ -223,7 +223,7 @@ def _build_dashboard_template(
                                     "datasetName": "unified_drift",
                                     "fields": [
                                         {"name": "department", "expression": "`department`"},
-                                        {"name": "avg_drift", "expression": "AVG(`js_divergence`)"},
+                                        {"name": "avg_drift", "expression": "AVG(`js_distance`)"},
                                         {"name": "table_count", "expression": "COUNT(DISTINCT `source_table_name`)"},
                                     ],
                                     "disaggregated": False,
@@ -250,7 +250,7 @@ def _build_dashboard_template(
                                     "fields": [
                                         {"name": "source_table_name", "expression": "`source_table_name`"},
                                         {"name": "column_name", "expression": "`column_name`"},
-                                        {"name": "js_divergence", "expression": "MAX(`js_divergence`)"},
+                                        {"name": "js_distance", "expression": "MAX(`js_distance`)"},
                                     ],
                                     "disaggregated": False,
                                 }
@@ -404,7 +404,7 @@ def _build_dashboard_template(
                                         {"name": "window_end", "expression": "`window_end`"},
                                         {"name": "source_table_name", "expression": "`source_table_name`"},
                                         {"name": "column_name", "expression": "`column_name`"},
-                                        {"name": "js_divergence", "expression": "`js_divergence`"},
+                                        {"name": "js_distance", "expression": "`js_distance`"},
                                         {"name": "ks_statistic", "expression": "`ks_statistic`"},
                                         {"name": "wasserstein_distance", "expression": "`wasserstein_distance`"},
                                         {"name": "drift_type", "expression": "`drift_type`"},
@@ -598,7 +598,7 @@ def _build_dashboard_template(
                                 "fields": [
                                     {"name": "source_table_name", "expression": "`source_table_name`"},
                                     {"name": "score", "expression": "COALESCE(`accuracy_score`, `r2_score`)"},
-                                    {"name": "max_js_divergence", "expression": "`max_js_divergence`"},
+                                    {"name": "max_js_distance", "expression": "`max_js_distance`"},
                                 ],
                                 "disaggregated": True,
                             }
@@ -606,7 +606,7 @@ def _build_dashboard_template(
                         "spec": {
                             "type": "scatter",
                             "encodings": {
-                                "x": {"fieldName": "max_js_divergence", "scale": {"type": "quantitative"}},
+                                "x": {"fieldName": "max_js_distance", "scale": {"type": "quantitative"}},
                                 "y": {"fieldName": "score", "scale": {"type": "quantitative"}},
                                 "color": {"fieldName": "source_table_name"},
                             },
@@ -663,11 +663,11 @@ def _build_dashboard_template(
                 "query": """
                     WITH drift_summary AS (
                         SELECT source_table_name, window_start, window_end, granularity,
-                            MAX(js_divergence) AS max_js_divergence,
-                            AVG(js_divergence) AS avg_js_divergence,
+                            MAX(js_distance) AS max_js_distance,
+                            AVG(js_distance) AS avg_js_distance,
                             COUNT(DISTINCT column_name) AS columns_drifted
                         FROM {unified_drift_view}
-                        WHERE js_divergence IS NOT NULL
+                        WHERE js_distance IS NOT NULL
                         GROUP BY source_table_name, window_start, window_end, granularity
                     ),
                     perf AS (
@@ -677,7 +677,7 @@ def _build_dashboard_template(
                     )
                     SELECT p.source_table_name, p.window_start, p.window_end, p.granularity,
                         p.accuracy_score, p.r2_score, p.precision_weighted, p.f1_weighted,
-                        d.max_js_divergence, d.avg_js_divergence, d.columns_drifted
+                        d.max_js_distance, d.avg_js_distance, d.columns_drifted
                     FROM perf p
                     LEFT JOIN drift_summary d
                         ON p.source_table_name = d.source_table_name
@@ -896,7 +896,7 @@ class DashboardProvisioner:
                                         "fields": [
                                             {"name": "monitor_group", "expression": "`monitor_group`"},
                                             {"name": "tables_monitored", "expression": "COUNT(DISTINCT `source_table_name`)"},
-                                            {"name": "critical_alerts", "expression": f"COUNT(CASE WHEN `js_divergence` >= {self.config.alerting.drift_threshold} THEN 1 END)"},
+                                            {"name": "critical_alerts", "expression": f"COUNT(CASE WHEN `js_distance` >= {self.config.alerting.drift_threshold} THEN 1 END)"},
                                         ],
                                         "disaggregated": False,
                                     }
@@ -914,7 +914,7 @@ class DashboardProvisioner:
                                         "fields": [
                                             {"name": "source_table_name", "expression": "`source_table_name`"},
                                             {"name": "monitor_group", "expression": "`monitor_group`"},
-                                            {"name": "max_drift", "expression": "MAX(`js_divergence`)"},
+                                            {"name": "max_drift", "expression": "MAX(`js_distance`)"},
                                         ],
                                         "disaggregated": False,
                                     }
@@ -931,7 +931,7 @@ class DashboardProvisioner:
                                         "datasetName": "rollup_drift",
                                         "fields": [
                                             {"name": "monitor_group", "expression": "`monitor_group`"},
-                                            {"name": "avg_drift", "expression": "AVG(`js_divergence`)"},
+                                            {"name": "avg_drift", "expression": "AVG(`js_distance`)"},
                                         ],
                                         "disaggregated": False,
                                     }
@@ -1079,8 +1079,8 @@ class DashboardProvisioner:
                                                     "expression": "`column_name`",
                                                 },
                                                 {
-                                                    "name": "js_divergence",
-                                                    "expression": "`js_divergence`",
+                                                    "name": "js_distance",
+                                                    "expression": "`js_distance`",
                                                 },
                                             ],
                                             "disaggregated": True,
@@ -1091,7 +1091,7 @@ class DashboardProvisioner:
                                     "type": "line",
                                     "encodings": {
                                         "x": {"fieldName": "window_end"},
-                                        "y": {"fieldName": "js_divergence"},
+                                        "y": {"fieldName": "js_distance"},
                                         "color": {"fieldName": "column_name"},
                                     },
                                 },

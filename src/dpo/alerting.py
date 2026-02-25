@@ -214,13 +214,13 @@ class AlertProvisioner:
             owner,
             department,
             column_name,
-            js_divergence,
+            js_distance,
             chi_square_statistic,
             drift_type,
             drift_threshold,
             CASE
-                WHEN js_divergence >= {effective_threshold} THEN 'CRITICAL'
-                WHEN js_divergence >= {warning_lower_bound} THEN 'WARNING'
+                WHEN js_distance >= {effective_threshold} THEN 'CRITICAL'
+                WHEN js_distance >= {warning_lower_bound} THEN 'WARNING'
             END as severity,
             CAST(1 AS DOUBLE) as trigger_value,
             runbook_url,
@@ -228,8 +228,8 @@ class AlertProvisioner:
             window_start,
             window_end
         FROM {unified_drift_view}
-        WHERE js_divergence >= {warning_lower_bound}
-        ORDER BY js_divergence DESC
+        WHERE js_distance >= {warning_lower_bound}
+        ORDER BY js_distance DESC
         LIMIT 100
         """
 
@@ -468,13 +468,13 @@ SELECT
     owner,
     department,
     column_name,
-    js_divergence,
+    js_distance,
     window_start,
     window_end
 FROM {unified_view}
 WHERE source_table_name = '{table_name}'
   AND {business_rule}
-ORDER BY js_divergence DESC;
+ORDER BY js_distance DESC;
 
 -- Step 2: Create the alert (manually in UI with this query)
 -- Alert Settings:
@@ -503,22 +503,22 @@ ORDER BY js_divergence DESC;
                 SELECT
                     source_table_name,
                     column_name,
-                    js_divergence,
+                    js_distance,
                     'WARNING' as severity
                 FROM {unified_view}
-                WHERE js_divergence >= {warning_lower_bound}
-                  AND js_divergence < {effective_threshold}
-                ORDER BY js_divergence DESC
+                WHERE js_distance >= {warning_lower_bound}
+                  AND js_distance < {effective_threshold}
+                ORDER BY js_distance DESC
             """,
             f"[DPO] Critical Query - {catalog}": f"""
                 SELECT
                     source_table_name,
                     column_name,
-                    js_divergence,
+                    js_distance,
                     'CRITICAL' as severity
                 FROM {unified_view}
-                WHERE js_divergence >= {effective_threshold}
-                ORDER BY js_divergence DESC
+                WHERE js_distance >= {effective_threshold}
+                ORDER BY js_distance DESC
             """,
         }
 
@@ -538,9 +538,9 @@ ORDER BY js_divergence DESC;
             source_table_name,
             department,
             owner,
-            COUNT(CASE WHEN js_divergence >= {effective_threshold} THEN 1 END) as critical_count,
-            COUNT(CASE WHEN js_divergence >= {warning_lower_bound} AND js_divergence < {effective_threshold} THEN 1 END) as warning_count,
-            MAX(js_divergence) as max_drift,
+            COUNT(CASE WHEN js_distance >= {effective_threshold} THEN 1 END) as critical_count,
+            COUNT(CASE WHEN js_distance >= {warning_lower_bound} AND js_distance < {effective_threshold} THEN 1 END) as warning_count,
+            MAX(js_distance) as max_drift,
             MAX(window_end) as last_check
         FROM {unified_view}
         GROUP BY source_table_name, department, owner
