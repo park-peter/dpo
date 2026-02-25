@@ -74,6 +74,11 @@ class MetricsAggregator:
         "precision.weighted as precision_weighted",
         "recall.weighted as recall_weighted",
         "f1_score.weighted as f1_weighted",
+        "roc_auc_score.one_vs_one.weighted as roc_auc_weighted",
+        "predictive_parity",
+        "predictive_equality",
+        "equal_opportunity",
+        "statistical_parity",
     ]
 
     REGRESSION_COLUMNS = [
@@ -298,6 +303,11 @@ class MetricsAggregator:
                 CAST(NULL AS DOUBLE) as precision_weighted,
                 CAST(NULL AS DOUBLE) as recall_weighted,
                 CAST(NULL AS DOUBLE) as f1_weighted,
+                CAST(NULL AS DOUBLE) as roc_auc_weighted,
+                CAST(NULL AS DOUBLE) as predictive_parity,
+                CAST(NULL AS DOUBLE) as predictive_equality,
+                CAST(NULL AS DOUBLE) as equal_opportunity,
+                CAST(NULL AS DOUBLE) as statistical_parity,
                 CAST(NULL AS DOUBLE) as mean_squared_error,
                 CAST(NULL AS DOUBLE) as root_mean_squared_error,
                 CAST(NULL AS DOUBLE) as mean_average_error,
