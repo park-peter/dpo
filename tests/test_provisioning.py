@@ -351,8 +351,6 @@ class TestProfileProvisioner:
         self, mock_workspace_client, sample_config, sample_discovered_tables
     ):
         """Test dry run mode validates columns and reports correctly."""
-        sample_config.dry_run = True
-
         provisioner = ProfileProvisioner(mock_workspace_client, sample_config)
         results, impact = provisioner.dry_run_all(sample_discovered_tables)
 

@@ -188,7 +188,6 @@ class TestBulkOrchestration:
         config = sample_config
         config.wait_for_monitors = True
         config.cleanup_orphans = True
-        config.dry_run = False
 
         w = MagicMock()
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: w)
@@ -223,7 +222,7 @@ class TestBulkOrchestration:
         verify_permissions = MagicMock()
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", verify_permissions)
 
-        report = dpo.run_bulk_provisioning(config)
+        report = dpo.run_bulk_provisioning(config, dry_run=False)
 
         verify_permissions.assert_called_once()
         wait_for_monitors.assert_called_once()
@@ -244,7 +243,6 @@ class TestBulkOrchestration:
         config = sample_config
         config.wait_for_monitors = True
         config.cleanup_orphans = False
-        config.dry_run = False
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
         coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=0)
@@ -263,7 +261,7 @@ class TestBulkOrchestration:
         monkeypatch.setattr(dpo, "wait_for_monitors", wait_for_monitors)
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
 
-        report = dpo.run_bulk_provisioning(config)
+        report = dpo.run_bulk_provisioning(config, dry_run=False)
 
         wait_for_monitors.assert_not_called()
         assert report.monitor_statuses == []
@@ -274,7 +272,6 @@ class TestBulkOrchestration:
     ):
         """Bulk mode should use dry_run_all when dry_run is enabled."""
         config = sample_config
-        config.dry_run = True
         config.wait_for_monitors = True
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
@@ -295,7 +292,7 @@ class TestBulkOrchestration:
         )
         monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
 
-        report = dpo.run_bulk_provisioning(config)
+        report = dpo.run_bulk_provisioning(config, dry_run=True)
 
         provisioner.dry_run_all.assert_called_once_with(tables)
         provisioner.provision_all.assert_not_called()
@@ -307,7 +304,6 @@ class TestBulkOrchestration:
     ):
         """Coverage should run after provisioning and orphan cleanup."""
         config = sample_config
-        config.dry_run = False
         config.wait_for_monitors = False
         config.cleanup_orphans = True
 
@@ -338,7 +334,7 @@ class TestBulkOrchestration:
             dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer)
         )
 
-        report = dpo.run_bulk_provisioning(config)
+        report = dpo.run_bulk_provisioning(config, dry_run=False)
 
         assert events == ["provision", "cleanup", "coverage"]
         assert report.coverage_report == coverage_report
@@ -350,7 +346,6 @@ class TestBulkOrchestration:
         config = sample_config
         config.wait_for_monitors = False
         config.cleanup_orphans = False
-        config.dry_run = False
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
@@ -367,7 +362,7 @@ class TestBulkOrchestration:
         ]
         monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
 
-        report = dpo.run_bulk_provisioning(config)
+        report = dpo.run_bulk_provisioning(config, dry_run=False)
 
         assert report.coverage_report is None
         assert report.monitors_created == 1
@@ -390,16 +385,15 @@ class TestFullOrchestration:
         bulk_runner = MagicMock(return_value=expected)
         monkeypatch.setattr(dpo, "run_bulk_provisioning", bulk_runner)
 
-        result = dpo.run_orchestration(sample_bulk_config)
+        result = dpo.run_orchestration(sample_bulk_config, dry_run=False)
 
-        bulk_runner.assert_called_once_with(sample_bulk_config)
+        bulk_runner.assert_called_once_with(sample_bulk_config, dry_run=False)
         assert result == expected
 
     def test_run_orchestration_full_pipeline(self, monkeypatch, sample_config):
         """Full mode should wire provisioning, aggregation, alerting, and dashboards."""
         config = sample_config
         config.mode = "full"
-        config.dry_run = False
         config.cleanup_orphans = True
         config.wait_for_monitors = True
         config.alerting.enable_aggregated_alerts = True
@@ -458,7 +452,7 @@ class TestFullOrchestration:
             MagicMock(return_value=dashboard_provisioner),
         )
 
-        report = dpo.run_orchestration(config)
+        report = dpo.run_orchestration(config, dry_run=False)
 
         verify_output.assert_called_once()
         verify_view.assert_called_once()
@@ -495,7 +489,6 @@ class TestFullOrchestration:
         """Dry run in full mode should skip aggregation, alerting, and dashboard deployment."""
         config = sample_config
         config.mode = "full"
-        config.dry_run = True
         config.wait_for_monitors = True
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
@@ -528,7 +521,7 @@ class TestFullOrchestration:
             MagicMock(return_value=dashboard_provisioner),
         )
 
-        report = dpo.run_orchestration(config)
+        report = dpo.run_orchestration(config, dry_run=True)
 
         aggregator.create_unified_views_by_group.assert_not_called()
         alerter.create_alerts_by_group.assert_not_called()
@@ -543,7 +536,6 @@ class TestFullOrchestration:
         """Full mode should skip wait and downstream work when all provisions fail."""
         config = sample_config
         config.mode = "full"
-        config.dry_run = False
         config.wait_for_monitors = True
         config.alerting.enable_aggregated_alerts = True
         config.deploy_aggregated_dashboard = True
@@ -578,7 +570,7 @@ class TestFullOrchestration:
             MagicMock(return_value=dashboard_provisioner),
         )
 
-        report = dpo.run_orchestration(config)
+        report = dpo.run_orchestration(config, dry_run=False)
 
         wait_for_monitors.assert_not_called()
         aggregator.create_unified_views_by_group.assert_not_called()
@@ -596,7 +588,6 @@ class TestFullOrchestration:
         """Full mode should run coverage after provisioning and orphan cleanup."""
         config = sample_config
         config.mode = "full"
-        config.dry_run = False
         config.wait_for_monitors = False
         config.cleanup_orphans = True
         config.alerting.enable_aggregated_alerts = False
@@ -633,7 +624,7 @@ class TestFullOrchestration:
         aggregator = MagicMock()
         monkeypatch.setattr(dpo, "MetricsAggregator", MagicMock(return_value=aggregator))
 
-        report = dpo.run_orchestration(config)
+        report = dpo.run_orchestration(config, dry_run=False)
 
         assert events == ["provision", "cleanup", "coverage"]
         assert report.coverage_report == coverage_report
@@ -644,7 +635,6 @@ class TestFullOrchestration:
         """Coverage analysis errors should not fail full orchestration."""
         config = sample_config
         config.mode = "full"
-        config.dry_run = False
         config.wait_for_monitors = False
         config.cleanup_orphans = False
         config.alerting.enable_aggregated_alerts = False
@@ -669,7 +659,7 @@ class TestFullOrchestration:
         ]
         monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
 
-        report = dpo.run_orchestration(config)
+        report = dpo.run_orchestration(config, dry_run=False)
 
         assert report.coverage_report is None
         assert report.monitors_created == 1
@@ -680,7 +670,6 @@ class TestFullOrchestration:
         """Performance view failures should not block dashboard deployment."""
         config = sample_config
         config.mode = "full"
-        config.dry_run = False
         config.wait_for_monitors = False
         config.cleanup_orphans = False
         config.alerting.enable_aggregated_alerts = False
@@ -722,7 +711,7 @@ class TestFullOrchestration:
             MagicMock(return_value=dashboard_provisioner),
         )
 
-        report = dpo.run_orchestration(config)
+        report = dpo.run_orchestration(config, dry_run=False)
 
         dashboard_provisioner.deploy_dashboards_by_group.assert_called_once_with(
             {
@@ -742,7 +731,6 @@ class TestFullOrchestration:
         """Rollup dashboard failures should not fail orchestration."""
         config = sample_config
         config.mode = "full"
-        config.dry_run = False
         config.wait_for_monitors = False
         config.cleanup_orphans = False
         config.alerting.enable_aggregated_alerts = False
@@ -796,7 +784,7 @@ class TestFullOrchestration:
             MagicMock(return_value=dashboard_provisioner),
         )
 
-        report = dpo.run_orchestration(config)
+        report = dpo.run_orchestration(config, dry_run=False)
 
         dashboard_provisioner.deploy_executive_rollup.assert_called_once()
         assert report.dashboard_ids == {"ml": "dash_ml", "default": "dash_default"}

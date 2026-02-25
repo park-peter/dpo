@@ -78,12 +78,12 @@ profile_defaults:
         with pytest.raises(ValidationError):
             load_config(str(config_file))
 
-    def test_default_profile_yaml_uses_safe_dry_run_default(self):
-        """Repository starter config should default to dry_run=true."""
+    def test_default_profile_yaml_loads_successfully(self):
+        """Repository starter config should load without errors."""
         repo_root = Path(__file__).resolve().parents[1]
         config = load_config(str(repo_root / "configs" / "default_profile.yaml"))
 
-        assert config.dry_run is True
+        assert config.catalog_name is not None
 
 
 class TestDiscoveryConfig:
