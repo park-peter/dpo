@@ -148,7 +148,7 @@ class MetricsAggregator:
             result = self.w.statement_execution.execute_statement(
                 warehouse_id=self.warehouse_id,
                 statement=ddl,
-                wait_timeout="120s",
+                wait_timeout="50s",
             )
 
             if result.status and result.status.state.value == "FAILED":
@@ -196,7 +196,7 @@ class MetricsAggregator:
             result = self.w.statement_execution.execute_statement(
                 warehouse_id=self.warehouse_id,
                 statement=ddl,
-                wait_timeout="120s",
+                wait_timeout="50s",
             )
 
             if result.status and result.status.state.value == "FAILED":
@@ -302,7 +302,7 @@ class MetricsAggregator:
             result = self.w.statement_execution.execute_statement(
                 warehouse_id=self.warehouse_id,
                 statement=ddl,
-                wait_timeout="120s",
+                wait_timeout="50s",
             )
 
             if result.status and result.status.state.value == "FAILED":
