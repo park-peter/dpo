@@ -299,7 +299,7 @@ class MetricsAggregator:
                     {self._sql_literal(table.full_name)} as source_table_name,
                     {self._sql_literal(owner)} as owner
                 FROM {profile_table}
-                WHERE column_name = ':table'
+                WHERE column_name = ':table' AND log_type = 'INPUT'
             """
             )
 
@@ -454,6 +454,7 @@ class MetricsAggregator:
                     {self._sql_literal(runbook_url)} as runbook_url,
                     {self._sql_literal(lineage_url)} as lineage_url
                 FROM {profile_table}
+                WHERE log_type = 'INPUT'
             """
             )
 

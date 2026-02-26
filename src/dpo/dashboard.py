@@ -235,7 +235,7 @@ def _build_dashboard_template(
                                         {"name": "department", "expression": "`department`"},
                                         {"name": "owner", "expression": "`owner`"},
                                         {"name": "max_drift", "expression": "MAX(`js_distance`)"},
-                                        {"name": "drift_count", "expression": "COUNT(*)"},
+                                        {"name": "drift_count", "expression": f"COUNT(CASE WHEN `js_distance` >= COALESCE(`drift_threshold`, {drift_threshold}) THEN 1 END)"},
                                     ],
                                     "disaggregated": False,
                                 }
@@ -359,6 +359,7 @@ def _build_dashboard_template(
                                         {"name": "avg_null_rate", "expression": "AVG(`null_rate`)"},
                                         {"name": "max_null_rate", "expression": "MAX(`null_rate`)"},
                                     ],
+                                    "filters": [{"expression": "`column_name` != ':table'"}],
                                     "disaggregated": False,
                                 }
                             }
@@ -415,6 +416,7 @@ def _build_dashboard_template(
                                         {"name": "column_name", "expression": "`column_name`"},
                                         {"name": "null_rate", "expression": "MAX(`null_rate`)"},
                                     ],
+                                    "filters": [{"expression": "`column_name` != ':table'"}],
                                     "disaggregated": False,
                                 }
                             }
@@ -448,6 +450,7 @@ def _build_dashboard_template(
                                         {"name": "distinct_count", "expression": "`distinct_count`"},
                                         {"name": "owner", "expression": "`owner`"},
                                     ],
+                                    "filters": [{"expression": "`column_name` != ':table'"}],
                                     "disaggregated": True,
                                 }
                             }

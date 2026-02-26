@@ -620,6 +620,116 @@ class TestWidgetSpecFormat:
         assert '"ordinal"' not in raw, "Found deprecated 'ordinal' scale type"
 
 
+class TestDataAccuracyFixes:
+    """Verify dashboard data accuracy fixes for drift counting and profile filtering."""
+
+    @staticmethod
+    def _deploy_and_parse(mock_workspace_client, sample_config):
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(dashboard_id="d")
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        provisioner.deploy_dashboard(
+            unified_drift_view="cat.sch.drift", parent_path="/Workspace/Shared/DPO"
+        )
+        payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
+        return json.loads(payload.serialized_dashboard)
+
+    @staticmethod
+    def _find_widget(serialized, widget_name):
+        for page in serialized.get("pages", []):
+            for item in page.get("layout", []):
+                widget = item.get("widget", {})
+                if widget.get("name") == widget_name:
+                    return widget
+        return None
+
+    def test_drift_count_uses_threshold_not_count_star(
+        self, mock_workspace_client, sample_config
+    ):
+        """Wall of Shame drift_count must count only rows exceeding the drift threshold."""
+        serialized = self._deploy_and_parse(mock_workspace_client, sample_config)
+        widget = self._find_widget(serialized, "top_drifters")
+        assert widget is not None, "top_drifters widget not found"
+
+        fields = widget["queries"][0]["query"]["fields"]
+        drift_count_expr = next(
+            f["expression"] for f in fields if f["name"] == "drift_count"
+        )
+        assert "COUNT(*)" not in drift_count_expr
+        assert "COUNT(CASE WHEN" in drift_count_expr
+        assert "js_distance" in drift_count_expr
+        assert "drift_threshold" in drift_count_expr
+
+    def test_drift_count_respects_configured_threshold(
+        self, mock_workspace_client, sample_config
+    ):
+        """drift_count expression must embed the config-driven drift threshold value."""
+        sample_config.alerting.drift_threshold = 0.5
+        serialized = self._deploy_and_parse(mock_workspace_client, sample_config)
+        widget = self._find_widget(serialized, "top_drifters")
+        fields = widget["queries"][0]["query"]["fields"]
+        drift_count_expr = next(
+            f["expression"] for f in fields if f["name"] == "drift_count"
+        )
+        assert "0.5" in drift_count_expr
+
+    def test_quality_details_table_excludes_table_rows(
+        self, mock_workspace_client, sample_config
+    ):
+        """quality_details_table must filter out column_name = ':table' rows."""
+        serialized = self._deploy_and_parse(mock_workspace_client, sample_config)
+        widget = self._find_widget(serialized, "quality_details_table")
+        assert widget is not None
+        query = widget["queries"][0]["query"]
+        filters = query.get("filters", [])
+        filter_exprs = [f["expression"] for f in filters]
+        assert any("':table'" in expr for expr in filter_exprs), (
+            "quality_details_table missing ':table' filter"
+        )
+
+    def test_null_rate_by_column_excludes_table_rows(
+        self, mock_workspace_client, sample_config
+    ):
+        """null_rate_by_column must filter out column_name = ':table' rows."""
+        serialized = self._deploy_and_parse(mock_workspace_client, sample_config)
+        widget = self._find_widget(serialized, "null_rate_by_column")
+        assert widget is not None
+        query = widget["queries"][0]["query"]
+        filters = query.get("filters", [])
+        filter_exprs = [f["expression"] for f in filters]
+        assert any("':table'" in expr for expr in filter_exprs), (
+            "null_rate_by_column missing ':table' filter"
+        )
+
+    def test_null_rate_trend_excludes_table_rows(
+        self, mock_workspace_client, sample_config
+    ):
+        """null_rate_trend must filter out column_name = ':table' rows."""
+        serialized = self._deploy_and_parse(mock_workspace_client, sample_config)
+        widget = self._find_widget(serialized, "null_rate_trend")
+        assert widget is not None
+        query = widget["queries"][0]["query"]
+        filters = query.get("filters", [])
+        filter_exprs = [f["expression"] for f in filters]
+        assert any("':table'" in expr for expr in filter_exprs), (
+            "null_rate_trend missing ':table' filter"
+        )
+
+    def test_row_count_by_table_does_not_filter_table_rows(
+        self, mock_workspace_client, sample_config
+    ):
+        """row_count_by_table should NOT filter ':table' rows (table-level aggregates are fine)."""
+        serialized = self._deploy_and_parse(mock_workspace_client, sample_config)
+        widget = self._find_widget(serialized, "row_count_by_table")
+        assert widget is not None
+        query = widget["queries"][0]["query"]
+        filters = query.get("filters", [])
+        filter_exprs = [f.get("expression", "") for f in filters]
+        assert not any("':table'" in expr for expr in filter_exprs), (
+            "row_count_by_table should not filter ':table'"
+        )
+
+
 class TestLakeviewTemplateFormat:
     """Verify normalized Lakeview dashboard template fields required for widget-dataset binding."""
 
