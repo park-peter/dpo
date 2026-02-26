@@ -130,6 +130,18 @@ class TestUnifiedProfileView:
         assert "record_count" in ddl
         assert "null_rate" in ddl
 
+    def test_generate_profile_view_filters_log_type_input(
+        self, mock_workspace_client, sample_config, sample_discovered_tables
+    ):
+        """Profile view DDL must include log_type = 'INPUT' filter."""
+        aggregator = MetricsAggregator(mock_workspace_client, sample_config)
+        ddl = aggregator._generate_unified_profile_view_ddl(
+            sample_discovered_tables,
+            "catalog.schema.unified_profile",
+            use_materialized=False,
+        )
+        assert "log_type = 'INPUT'" in ddl
+
     def test_generate_profile_view_ddl_empty(
         self, mock_workspace_client, sample_config
     ):
@@ -165,6 +177,18 @@ class TestUnifiedPerformanceView:
         assert "precision.weighted as precision_weighted" in ddl
         assert "CAST(NULL AS DOUBLE) as mean_squared_error" in ddl
         assert "source_table_name" in ddl
+
+    def test_performance_view_filters_log_type_input(
+        self, mock_workspace_client, sample_config, sample_discovered_table
+    ):
+        """Performance view DDL must include log_type = 'INPUT' filter."""
+        aggregator = MetricsAggregator(mock_workspace_client, sample_config)
+        ddl = aggregator.create_unified_performance_view(
+            [sample_discovered_table],
+            "test_catalog.global_monitoring.unified_performance_metrics",
+            use_materialized=False,
+        )
+        assert "log_type = 'INPUT'" in ddl
 
     def test_create_unified_performance_view_empty_when_no_inference_tables(
         self, mock_workspace_client, sample_snapshot_config, sample_discovered_table

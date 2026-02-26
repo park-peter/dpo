@@ -354,10 +354,50 @@ class TestCoverageAnalyzer:
         assert len(stale) == 1
         assert stale[0].status == "unknown"
 
-    def test_find_stale_handles_refresh_list_errors(self, mock_w, coverage_config):
-        """Refresh API failures should not prevent stale detection."""
+    def test_find_stale_skips_active_monitors_with_no_refresh_history(
+        self, mock_w, coverage_config
+    ):
+        """ACTIVE monitors with no refresh history should NOT be flagged as stale."""
         status = MagicMock()
         status.value = "ACTIVE"
+        cfg = MagicMock()
+        cfg.status = status
+        monitor = MagicMock()
+        monitor.data_profiling_config = cfg
+        mock_w.data_quality.get_monitor.return_value = monitor
+        mock_w.data_quality.list_refresh.return_value = []
+        table_info = MagicMock()
+        table_info.full_name = "test_catalog.ml.model_a"
+        mock_w.tables.get.return_value = table_info
+
+        analyzer = CoverageAnalyzer(mock_w, coverage_config)
+        stale = analyzer._find_stale({"obj1": "m1"})
+        assert len(stale) == 0
+
+    def test_find_stale_skips_data_profiling_status_active_with_no_refresh(
+        self, mock_w, coverage_config
+    ):
+        """DATA_PROFILING_STATUS_ACTIVE monitors with no refresh history should NOT be flagged."""
+        status = MagicMock()
+        status.value = "DATA_PROFILING_STATUS_ACTIVE"
+        cfg = MagicMock()
+        cfg.status = status
+        monitor = MagicMock()
+        monitor.data_profiling_config = cfg
+        mock_w.data_quality.get_monitor.return_value = monitor
+        mock_w.data_quality.list_refresh.return_value = []
+        table_info = MagicMock()
+        table_info.full_name = "test_catalog.ml.model_a"
+        mock_w.tables.get.return_value = table_info
+
+        analyzer = CoverageAnalyzer(mock_w, coverage_config)
+        stale = analyzer._find_stale({"obj1": "m1"})
+        assert len(stale) == 0
+
+    def test_find_stale_handles_refresh_list_errors(self, mock_w, coverage_config):
+        """Refresh API failures for non-ACTIVE monitors should still flag them as stale."""
+        status = MagicMock()
+        status.value = "PAUSED"
         cfg = MagicMock()
         cfg.status = status
         monitor = MagicMock()
@@ -371,7 +411,7 @@ class TestCoverageAnalyzer:
         analyzer = CoverageAnalyzer(mock_w, coverage_config)
         stale = analyzer._find_stale({"obj1": "m1"})
         assert len(stale) == 1
-        assert stale[0].status == "ACTIVE"
+        assert stale[0].status == "PAUSED"
 
     def test_find_stale_handles_monitor_fetch_error(self, mock_w, coverage_config):
         """Monitor fetch failures should be skipped safely."""

@@ -327,6 +327,12 @@ class CoverageAnalyzer:
                     except Exception:
                         pass
 
+                if last_refresh is None and status in (
+                    "DATA_PROFILING_STATUS_ACTIVE",
+                    "ACTIVE",
+                ):
+                    continue
+
                 if last_refresh is None or last_refresh < cutoff:
                     days = (datetime.now(timezone.utc) - last_refresh).days if last_refresh else None
                     stale.append(
