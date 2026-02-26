@@ -4,6 +4,7 @@ import json
 from unittest.mock import MagicMock, call
 
 import pytest
+from databricks.sdk.errors import ResourceAlreadyExists
 
 from dpo.coverage import CoverageReport, OrphanMonitor, StaleMonitor, UnmonitoredTable
 from dpo.dashboard import DashboardProvisioner
@@ -48,16 +49,17 @@ class TestDashboardProvisioner:
         assert "coverage_orphans" in ds_by_name
         assert "unified_performance" in ds_by_name
         assert "perf_vs_drift" in ds_by_name
-        assert (
-            ds_by_name["unified_drift"]["query"]
-            == "SELECT * FROM test_catalog.global_monitoring.unified_drift_metrics"
-        )
-        assert (
-            ds_by_name["unified_performance"]["query"]
-            == "SELECT * FROM test_catalog.global_monitoring.unified_performance_metrics"
-        )
-        assert "{unified_drift_view}" not in ds_by_name["perf_vs_drift"]["query"]
-        assert "{unified_performance_view}" not in ds_by_name["perf_vs_drift"]["query"]
+        assert ds_by_name["unified_drift"]["queryLines"] == [
+            "SELECT * FROM test_catalog.global_monitoring.unified_drift_metrics"
+        ]
+        assert ds_by_name["unified_performance"]["queryLines"] == [
+            "SELECT * FROM test_catalog.global_monitoring.unified_performance_metrics"
+        ]
+        assert "{unified_drift_view}" not in ds_by_name["perf_vs_drift"]["queryLines"][0]
+        assert "{unified_performance_view}" not in ds_by_name["perf_vs_drift"]["queryLines"][0]
+
+        # warehouse_id is forwarded from config
+        assert dashboard_payload.warehouse_id == "test_warehouse_123"
 
     def test_deploy_dashboard_updates_when_existing(
         self, mock_workspace_client, sample_config
@@ -237,12 +239,13 @@ class TestDashboardProvisioner:
         serialized = json.loads(dashboard_payload.serialized_dashboard)
         ds_by_name = {ds["name"]: ds for ds in serialized["datasets"]}
 
-        assert "snapshot_timestamp_utc" in ds_by_name["coverage_summary"]["query"]
-        assert "2026-02-10T18:00:00+00:00" in ds_by_name["coverage_summary"]["query"]
-        assert "5 AS total_catalog_tables" in ds_by_name["coverage_summary"]["query"]
-        assert "test_catalog.ml.unmon" in ds_by_name["coverage_unmonitored"]["query"]
-        assert "test_catalog.ml.stale" in ds_by_name["coverage_stale"]["query"]
-        assert "test_catalog.ml.orphan" in ds_by_name["coverage_orphans"]["query"]
+        cov_q = ds_by_name["coverage_summary"]["queryLines"][0]
+        assert "snapshot_timestamp_utc" in cov_q
+        assert "2026-02-10T18:00:00+00:00" in cov_q
+        assert "5 AS total_catalog_tables" in cov_q
+        assert "test_catalog.ml.unmon" in ds_by_name["coverage_unmonitored"]["queryLines"][0]
+        assert "test_catalog.ml.stale" in ds_by_name["coverage_stale"]["queryLines"][0]
+        assert "test_catalog.ml.orphan" in ds_by_name["coverage_orphans"]["queryLines"][0]
 
     def test_cleanup_stale_dashboards_deletes_inactive_groups(
         self, mock_workspace_client, sample_config
@@ -319,8 +322,9 @@ class TestDashboardProvisioner:
         assert "predictions" in template["pages"][0]["displayName"]
         assert (
             "test_catalog.ml.predictions"
-            in template["datasets"][0]["query"]
+            in template["datasets"][0]["queryLines"][0]
         )
+        assert template["pages"][0]["pageType"] == "PAGE_TYPE_CANVAS"
 
     def test_deploy_executive_rollup_creates_and_escapes_group_names(
         self, mock_workspace_client, sample_config
@@ -343,7 +347,7 @@ class TestDashboardProvisioner:
         payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
         serialized = json.loads(payload.serialized_dashboard)
         drift_query = next(
-            ds["query"] for ds in serialized["datasets"] if ds["name"] == "rollup_drift"
+            ds["queryLines"][0] for ds in serialized["datasets"] if ds["name"] == "rollup_drift"
         )
         assert "O''Reilly" in drift_query
         assert "O'Reilly" not in drift_query
@@ -369,3 +373,319 @@ class TestDashboardProvisioner:
         assert dashboard_id == "rollup_existing"
         mock_workspace_client.lakeview.update.assert_called_once()
         mock_workspace_client.lakeview.create.assert_not_called()
+
+    def test_deploy_dashboard_recovers_from_resource_already_exists(
+        self, mock_workspace_client, sample_config
+    ):
+        """When lakeview.list misses the dashboard but create raises ResourceAlreadyExists,
+        the code should resolve via workspace path and update instead."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.side_effect = ResourceAlreadyExists(
+            "Node named 'DPO Global Health - test_catalog.lvdash.json' already exists"
+        )
+        ws_status = MagicMock()
+        ws_status.resource_id = "dash_resolved"
+        mock_workspace_client.workspace.get_status.return_value = ws_status
+        mock_workspace_client.lakeview.update.return_value = MagicMock(
+            dashboard_id="dash_resolved"
+        )
+
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        dashboard_id = provisioner.deploy_dashboard(
+            unified_drift_view="test_catalog.global_monitoring.unified_drift_metrics",
+            parent_path="/Workspace/Shared/DPO",
+        )
+
+        assert dashboard_id == "dash_resolved"
+        mock_workspace_client.workspace.get_status.assert_called_once_with(
+            "/Workspace/Shared/DPO/DPO Global Health - test_catalog.lvdash.json"
+        )
+        mock_workspace_client.lakeview.update.assert_called_once()
+
+    def test_deploy_dashboard_reraises_when_resolve_fails(
+        self, mock_workspace_client, sample_config
+    ):
+        """If both create and workspace path resolution fail, the original error propagates."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.side_effect = ResourceAlreadyExists(
+            "already exists"
+        )
+        mock_workspace_client.workspace.get_status.side_effect = RuntimeError("not found")
+
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        with pytest.raises(ResourceAlreadyExists):
+            provisioner.deploy_dashboard(
+                unified_drift_view="test_catalog.global_monitoring.unified_drift_metrics",
+                parent_path="/Workspace/Shared/DPO",
+            )
+
+    def test_deploy_executive_rollup_recovers_from_resource_already_exists(
+        self, mock_workspace_client, sample_config
+    ):
+        """Rollup deployment should also recover from ResourceAlreadyExists."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.side_effect = ResourceAlreadyExists(
+            "already exists"
+        )
+        ws_status = MagicMock()
+        ws_status.resource_id = "rollup_resolved"
+        mock_workspace_client.workspace.get_status.return_value = ws_status
+        mock_workspace_client.lakeview.update.return_value = MagicMock(
+            dashboard_id="rollup_resolved"
+        )
+
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        dashboard_id = provisioner.deploy_executive_rollup(
+            {"default": ("cat.gm.drift", "cat.gm.profile")},
+            "/Workspace/Shared/DPO",
+        )
+
+        assert dashboard_id == "rollup_resolved"
+        mock_workspace_client.lakeview.update.assert_called_once()
+
+
+class TestWidgetSpecFormat:
+    """Validate all widget specs use the correct Lakeview serialized dashboard format."""
+
+    VALID_WIDGET_TYPES = {"counter", "table", "bar", "line", "scatter", "pie"}
+    VERSION_BY_TYPE = {
+        "counter": 2,
+        "table": 2,
+        "bar": 3,
+        "line": 3,
+        "scatter": 3,
+        "pie": 3,
+    }
+
+    @staticmethod
+    def _extract_widgets(serialized: dict) -> list:
+        widgets = []
+        for page in serialized.get("pages", []):
+            for item in page.get("layout", []):
+                widget = item.get("widget", {})
+                if "spec" in widget:
+                    widgets.append(widget)
+        return widgets
+
+    def test_global_health_widgets_have_valid_specs(
+        self, mock_workspace_client, sample_config
+    ):
+        """Every widget in the global health dashboard must have widgetType, version, and frame."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(
+            dashboard_id="dash_spec"
+        )
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        provisioner.deploy_dashboard(
+            unified_drift_view="cat.sch.drift",
+            parent_path="/Workspace/Shared/DPO",
+        )
+
+        payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
+        serialized = json.loads(payload.serialized_dashboard)
+        widgets = self._extract_widgets(serialized)
+        assert len(widgets) > 0, "Expected at least one widget"
+
+        for widget in widgets:
+            spec = widget["spec"]
+            name = widget["name"]
+            assert "widgetType" in spec, f"{name}: missing widgetType"
+            assert "type" not in spec, f"{name}: uses deprecated 'type' key"
+            assert spec["widgetType"] in self.VALID_WIDGET_TYPES, (
+                f"{name}: invalid widgetType '{spec['widgetType']}'"
+            )
+            expected_version = self.VERSION_BY_TYPE[spec["widgetType"]]
+            assert spec.get("version") == expected_version, (
+                f"{name}: version should be {expected_version}, got {spec.get('version')}"
+            )
+            assert "frame" in spec, f"{name}: missing frame"
+            assert spec["frame"].get("showTitle") is True, f"{name}: frame.showTitle not True"
+            assert spec["frame"].get("title"), f"{name}: frame.title is empty"
+            assert "encodings" in spec, f"{name}: missing encodings"
+
+    def test_rollup_widgets_have_valid_specs(
+        self, mock_workspace_client, sample_config
+    ):
+        """Every widget in the executive rollup dashboard must have widgetType, version, and frame."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(
+            dashboard_id="rollup_spec"
+        )
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        provisioner.deploy_executive_rollup(
+            {"default": ("cat.gm.drift", "cat.gm.profile")},
+            "/Workspace/Shared/DPO",
+        )
+
+        payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
+        serialized = json.loads(payload.serialized_dashboard)
+        widgets = self._extract_widgets(serialized)
+        assert len(widgets) > 0
+
+        for widget in widgets:
+            spec = widget["spec"]
+            name = widget["name"]
+            assert "widgetType" in spec, f"{name}: missing widgetType"
+            assert "type" not in spec, f"{name}: uses deprecated 'type' key"
+            assert spec["widgetType"] in self.VALID_WIDGET_TYPES
+            assert spec.get("version") == self.VERSION_BY_TYPE[spec["widgetType"]]
+            assert "frame" in spec and spec["frame"].get("title")
+            assert "encodings" in spec
+
+    def test_custom_template_widget_has_valid_spec(
+        self, mock_workspace_client, sample_config
+    ):
+        """Custom template widget must have widgetType, version, and frame."""
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        template = provisioner.generate_custom_dashboard_template(
+            unified_view="cat.sch.drift",
+            table_name="cat.sch.predictions",
+            dashboard_name="Test",
+        )
+
+        widgets = self._extract_widgets(template)
+        assert len(widgets) == 1
+        spec = widgets[0]["spec"]
+        assert spec["widgetType"] == "line"
+        assert spec["version"] == 3
+        assert spec["frame"]["showTitle"] is True
+        assert spec["frame"]["title"]
+
+    def test_table_widgets_have_column_encodings(
+        self, mock_workspace_client, sample_config
+    ):
+        """Table widgets must define encodings.columns with fieldName and displayName."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(
+            dashboard_id="dash_tbl"
+        )
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        provisioner.deploy_dashboard(
+            unified_drift_view="cat.sch.drift",
+            parent_path="/Workspace/Shared/DPO",
+        )
+
+        payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
+        serialized = json.loads(payload.serialized_dashboard)
+        widgets = self._extract_widgets(serialized)
+        table_widgets = [w for w in widgets if w["spec"]["widgetType"] == "table"]
+        assert len(table_widgets) > 0
+
+        for widget in table_widgets:
+            columns = widget["spec"]["encodings"].get("columns", [])
+            assert len(columns) > 0, f"{widget['name']}: table has no columns"
+            for col in columns:
+                assert "fieldName" in col, f"{widget['name']}: column missing fieldName"
+                assert "displayName" in col, f"{widget['name']}: column missing displayName"
+
+    def test_no_heatmap_widget_type(
+        self, mock_workspace_client, sample_config
+    ):
+        """Heatmap is not a valid Lakeview widget type; none should remain."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(
+            dashboard_id="dash_heat"
+        )
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        provisioner.deploy_dashboard(
+            unified_drift_view="cat.sch.drift",
+            parent_path="/Workspace/Shared/DPO",
+        )
+
+        payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
+        serialized = json.loads(payload.serialized_dashboard)
+        widgets = self._extract_widgets(serialized)
+
+        for widget in widgets:
+            assert widget["spec"].get("widgetType") != "heatmap", (
+                f"{widget['name']}: still uses unsupported 'heatmap' widgetType"
+            )
+
+    def test_no_ordinal_scale_type(
+        self, mock_workspace_client, sample_config
+    ):
+        """Lakeview uses 'categorical' not 'ordinal' for string dimensions."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(
+            dashboard_id="dash_ord"
+        )
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        provisioner.deploy_dashboard(
+            unified_drift_view="cat.sch.drift",
+            parent_path="/Workspace/Shared/DPO",
+        )
+
+        payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
+        raw = payload.serialized_dashboard
+        assert '"ordinal"' not in raw, "Found deprecated 'ordinal' scale type"
+
+
+class TestLakeviewTemplateFormat:
+    """Verify normalized Lakeview dashboard template fields required for widget-dataset binding."""
+
+    @staticmethod
+    def _deploy_and_parse(mock_workspace_client, sample_config):
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(dashboard_id="d")
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        provisioner.deploy_dashboard(
+            unified_drift_view="cat.sch.drift", parent_path="/Workspace/Shared/DPO"
+        )
+        payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
+        return payload, json.loads(payload.serialized_dashboard)
+
+    def test_datasets_use_query_lines_not_query(
+        self, mock_workspace_client, sample_config
+    ):
+        """Datasets must use queryLines (list) instead of query (string) for API compatibility."""
+        _, serialized = self._deploy_and_parse(mock_workspace_client, sample_config)
+        for ds in serialized["datasets"]:
+            assert "queryLines" in ds, f"Dataset '{ds['name']}' missing queryLines"
+            assert isinstance(ds["queryLines"], list), f"Dataset '{ds['name']}' queryLines not a list"
+            assert "query" not in ds, f"Dataset '{ds['name']}' still has deprecated 'query' key"
+
+    def test_pages_have_page_type(self, mock_workspace_client, sample_config):
+        """Every page must declare pageType for Lakeview rendering."""
+        _, serialized = self._deploy_and_parse(mock_workspace_client, sample_config)
+        for page in serialized["pages"]:
+            assert page.get("pageType") == "PAGE_TYPE_CANVAS", (
+                f"Page '{page['name']}' missing or wrong pageType"
+            )
+
+    def test_widget_queries_have_main_query_name(
+        self, mock_workspace_client, sample_config
+    ):
+        """Primary widget query should be named 'main_query' for dataset binding."""
+        _, serialized = self._deploy_and_parse(mock_workspace_client, sample_config)
+        for page in serialized["pages"]:
+            for item in page["layout"]:
+                widget = item.get("widget", {})
+                queries = widget.get("queries", [])
+                if queries:
+                    assert queries[0].get("name") == "main_query", (
+                        f"Widget '{widget['name']}' first query not named 'main_query'"
+                    )
+
+    def test_warehouse_id_forwarded_to_dashboard(
+        self, mock_workspace_client, sample_config
+    ):
+        """Dashboard creation must include warehouse_id from config."""
+        payload, _ = self._deploy_and_parse(mock_workspace_client, sample_config)
+        assert payload.warehouse_id == "test_warehouse_123"
+
+    def test_rollup_datasets_use_query_lines(
+        self, mock_workspace_client, sample_config
+    ):
+        """Executive rollup datasets must also use queryLines."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(dashboard_id="r")
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        provisioner.deploy_executive_rollup(
+            {"default": ("cat.gm.drift", "cat.gm.profile")},
+            "/Workspace/Shared/DPO",
+        )
+        payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
+        serialized = json.loads(payload.serialized_dashboard)
+        for ds in serialized["datasets"]:
+            assert "queryLines" in ds, f"Rollup dataset '{ds['name']}' missing queryLines"
+            assert "query" not in ds
