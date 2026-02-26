@@ -9,6 +9,7 @@ import logging
 from typing import Dict, List, Optional, Set, Tuple
 
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.errors import ResourceAlreadyExists
 from databricks.sdk.service.dashboards import Dashboard
 
 from dpo.config import OrchestratorConfig
@@ -22,7 +23,22 @@ def _ensure_query_names(template: dict) -> dict:
             widget = item.get("widget", {})
             for i, q in enumerate(widget.get("queries", [])):
                 if "name" not in q:
-                    q["name"] = f"{widget.get('name', 'query')}_{i}"
+                    q["name"] = "main_query" if i == 0 else f"query_{i}"
+    return template
+
+
+def _normalize_template(template: dict) -> dict:
+    """Normalize the dashboard template for Lakeview API compatibility.
+
+    - Converts dataset ``query`` (string) to ``queryLines`` (list of strings).
+    - Adds ``pageType: PAGE_TYPE_CANVAS`` to pages that lack it.
+    """
+    for ds in template.get("datasets", []):
+        if "query" in ds and "queryLines" not in ds:
+            ds["queryLines"] = [ds.pop("query")]
+    for page in template.get("pages", []):
+        if "pageType" not in page:
+            page["pageType"] = "PAGE_TYPE_CANVAS"
     return template
 
 logger = logging.getLogger(__name__)
@@ -171,11 +187,13 @@ def _build_dashboard_template(
                             }
                         ],
                         "spec": {
-                            "type": "counter",
+                            "version": 2,
+                            "widgetType": "counter",
                             "encodings": {"value": {"fieldName": "total_tables", "displayName": "Monitored Tables"}},
+                            "frame": {"showTitle": True, "title": "Monitored Tables"},
                         },
                     },
-                    "position": {"x": 0, "y": 0, "width": 2, "height": 1},
+                    "position": {"x": 0, "y": 0, "width": 2, "height": 3},
                 },
                 {
                     "widget": {
@@ -194,14 +212,16 @@ def _build_dashboard_template(
                             }
                         ],
                         "spec": {
-                            "type": "line",
+                            "version": 3,
+                            "widgetType": "line",
                             "encodings": {
-                                "x": {"fieldName": "window_end", "scale": {"type": "temporal"}},
-                                "y": {"fieldName": "avg_drift", "scale": {"type": "quantitative"}},
+                                "x": {"fieldName": "window_end", "scale": {"type": "temporal"}, "displayName": "Window End"},
+                                "y": {"fieldName": "avg_drift", "scale": {"type": "quantitative"}, "displayName": "Avg Drift"},
                             },
+                            "frame": {"showTitle": True, "title": "Drift Trend"},
                         },
                     },
-                    "position": {"x": 2, "y": 0, "width": 4, "height": 2},
+                    "position": {"x": 2, "y": 0, "width": 4, "height": 3},
                 },
                 {
                     "widget": {
@@ -221,9 +241,22 @@ def _build_dashboard_template(
                                 }
                             }
                         ],
-                        "spec": {"type": "table", "title": "Wall of Shame - Top Drifters"},
+                        "spec": {
+                            "version": 2,
+                            "widgetType": "table",
+                            "encodings": {
+                                "columns": [
+                                    {"fieldName": "source_table_name", "displayName": "Table"},
+                                    {"fieldName": "department", "displayName": "Department"},
+                                    {"fieldName": "owner", "displayName": "Owner"},
+                                    {"fieldName": "max_drift", "displayName": "Max Drift"},
+                                    {"fieldName": "drift_count", "displayName": "Drift Count"},
+                                ],
+                            },
+                            "frame": {"showTitle": True, "title": "Wall of Shame - Top Drifters"},
+                        },
                     },
-                    "position": {"x": 0, "y": 2, "width": 6, "height": 3},
+                    "position": {"x": 0, "y": 3, "width": 6, "height": 5},
                 },
                 {
                     "widget": {
@@ -242,14 +275,16 @@ def _build_dashboard_template(
                             }
                         ],
                         "spec": {
-                            "type": "bar",
+                            "version": 3,
+                            "widgetType": "bar",
                             "encodings": {
-                                "x": {"fieldName": "department", "scale": {"type": "ordinal"}},
-                                "y": {"fieldName": "avg_drift", "scale": {"type": "quantitative"}},
+                                "x": {"fieldName": "department", "scale": {"type": "categorical"}, "displayName": "Department"},
+                                "y": {"fieldName": "avg_drift", "scale": {"type": "quantitative"}, "displayName": "Avg Drift"},
                             },
+                            "frame": {"showTitle": True, "title": "Drift by Department"},
                         },
                     },
-                    "position": {"x": 0, "y": 5, "width": 3, "height": 2},
+                    "position": {"x": 0, "y": 8, "width": 3, "height": 5},
                 },
                 {
                     "widget": {
@@ -267,9 +302,18 @@ def _build_dashboard_template(
                                 }
                             }
                         ],
-                        "spec": {"type": "heatmap"},
+                        "spec": {
+                            "version": 3,
+                            "widgetType": "bar",
+                            "encodings": {
+                                "x": {"fieldName": "column_name", "scale": {"type": "categorical"}, "displayName": "Column"},
+                                "y": {"fieldName": "js_distance", "scale": {"type": "quantitative"}, "displayName": "Max Drift"},
+                                "color": {"fieldName": "source_table_name", "scale": {"type": "categorical"}, "displayName": "Table"},
+                            },
+                            "frame": {"showTitle": True, "title": "Feature Drift by Column"},
+                        },
                     },
-                    "position": {"x": 3, "y": 5, "width": 3, "height": 2},
+                    "position": {"x": 3, "y": 8, "width": 3, "height": 5},
                 },
             ],
         },
@@ -295,11 +339,13 @@ def _build_dashboard_template(
                             }
                         ],
                         "spec": {
-                            "type": "counter",
+                            "version": 2,
+                            "widgetType": "counter",
                             "encodings": {"value": {"fieldName": "tables_profiled", "displayName": "Tables Profiled"}},
+                            "frame": {"showTitle": True, "title": "Tables Profiled"},
                         },
                     },
-                    "position": {"x": 0, "y": 0, "width": 2, "height": 1},
+                    "position": {"x": 0, "y": 0, "width": 2, "height": 3},
                 },
                 {
                     "widget": {
@@ -318,14 +364,16 @@ def _build_dashboard_template(
                             }
                         ],
                         "spec": {
-                            "type": "line",
+                            "version": 3,
+                            "widgetType": "line",
                             "encodings": {
-                                "x": {"fieldName": "window_end", "scale": {"type": "temporal"}},
-                                "y": {"fieldName": "avg_null_rate", "scale": {"type": "quantitative"}},
+                                "x": {"fieldName": "window_end", "scale": {"type": "temporal"}, "displayName": "Window End"},
+                                "y": {"fieldName": "avg_null_rate", "scale": {"type": "quantitative"}, "displayName": "Avg Null Rate"},
                             },
+                            "frame": {"showTitle": True, "title": "Null Rate Trend"},
                         },
                     },
-                    "position": {"x": 2, "y": 0, "width": 4, "height": 2},
+                    "position": {"x": 2, "y": 0, "width": 4, "height": 3},
                 },
                 {
                     "widget": {
@@ -344,14 +392,16 @@ def _build_dashboard_template(
                             }
                         ],
                         "spec": {
-                            "type": "bar",
+                            "version": 3,
+                            "widgetType": "bar",
                             "encodings": {
-                                "x": {"fieldName": "source_table_name", "scale": {"type": "ordinal"}},
-                                "y": {"fieldName": "latest_record_count", "scale": {"type": "quantitative"}},
+                                "x": {"fieldName": "source_table_name", "scale": {"type": "categorical"}, "displayName": "Table"},
+                                "y": {"fieldName": "latest_record_count", "scale": {"type": "quantitative"}, "displayName": "Record Count"},
                             },
+                            "frame": {"showTitle": True, "title": "Row Count by Table"},
                         },
                     },
-                    "position": {"x": 0, "y": 2, "width": 3, "height": 2},
+                    "position": {"x": 0, "y": 3, "width": 3, "height": 5},
                 },
                 {
                     "widget": {
@@ -369,9 +419,18 @@ def _build_dashboard_template(
                                 }
                             }
                         ],
-                        "spec": {"type": "heatmap", "title": "Null Rate by Column"},
+                        "spec": {
+                            "version": 3,
+                            "widgetType": "bar",
+                            "encodings": {
+                                "x": {"fieldName": "column_name", "scale": {"type": "categorical"}, "displayName": "Column"},
+                                "y": {"fieldName": "null_rate", "scale": {"type": "quantitative"}, "displayName": "Max Null Rate"},
+                                "color": {"fieldName": "source_table_name", "scale": {"type": "categorical"}, "displayName": "Table"},
+                            },
+                            "frame": {"showTitle": True, "title": "Null Rate by Column"},
+                        },
                     },
-                    "position": {"x": 3, "y": 2, "width": 3, "height": 2},
+                    "position": {"x": 3, "y": 3, "width": 3, "height": 5},
                 },
                 {
                     "widget": {
@@ -393,9 +452,24 @@ def _build_dashboard_template(
                                 }
                             }
                         ],
-                        "spec": {"type": "table"},
+                        "spec": {
+                            "version": 2,
+                            "widgetType": "table",
+                            "encodings": {
+                                "columns": [
+                                    {"fieldName": "window_end", "displayName": "Window End"},
+                                    {"fieldName": "source_table_name", "displayName": "Table"},
+                                    {"fieldName": "column_name", "displayName": "Column"},
+                                    {"fieldName": "null_rate", "displayName": "Null Rate"},
+                                    {"fieldName": "record_count", "displayName": "Record Count"},
+                                    {"fieldName": "distinct_count", "displayName": "Distinct Count"},
+                                    {"fieldName": "owner", "displayName": "Owner"},
+                                ],
+                            },
+                            "frame": {"showTitle": True, "title": "Quality Details"},
+                        },
                     },
-                    "position": {"x": 0, "y": 4, "width": 6, "height": 3},
+                    "position": {"x": 0, "y": 8, "width": 6, "height": 6},
                 },
             ],
         },
@@ -425,9 +499,25 @@ def _build_dashboard_template(
                                 }
                             }
                         ],
-                        "spec": {"type": "table"},
+                        "spec": {
+                            "version": 2,
+                            "widgetType": "table",
+                            "encodings": {
+                                "columns": [
+                                    {"fieldName": "window_end", "displayName": "Window End"},
+                                    {"fieldName": "source_table_name", "displayName": "Table"},
+                                    {"fieldName": "column_name", "displayName": "Column"},
+                                    {"fieldName": "js_distance", "displayName": "JS Distance"},
+                                    {"fieldName": "ks_statistic", "displayName": "KS Statistic"},
+                                    {"fieldName": "wasserstein_distance", "displayName": "Wasserstein Distance"},
+                                    {"fieldName": "drift_type", "displayName": "Drift Type"},
+                                    {"fieldName": "owner", "displayName": "Owner"},
+                                ],
+                            },
+                            "frame": {"showTitle": True, "title": "Drift Details"},
+                        },
                     },
-                    "position": {"x": 0, "y": 0, "width": 6, "height": 5},
+                    "position": {"x": 0, "y": 0, "width": 6, "height": 8},
                 }
             ],
         },
@@ -458,9 +548,23 @@ def _build_dashboard_template(
                                 }
                             }
                         ],
-                        "spec": {"type": "table", "title": "Coverage Summary"},
+                        "spec": {
+                            "version": 2,
+                            "widgetType": "table",
+                            "encodings": {
+                                "columns": [
+                                    {"fieldName": "snapshot_timestamp_utc", "displayName": "Snapshot"},
+                                    {"fieldName": "total_catalog_tables", "displayName": "Catalog Tables"},
+                                    {"fieldName": "total_monitored", "displayName": "Monitored"},
+                                    {"fieldName": "unmonitored_tables", "displayName": "Unmonitored"},
+                                    {"fieldName": "stale_monitors", "displayName": "Stale"},
+                                    {"fieldName": "orphan_monitors", "displayName": "Orphan"},
+                                ],
+                            },
+                            "frame": {"showTitle": True, "title": "Coverage Summary"},
+                        },
                     },
-                    "position": {"x": 0, "y": 0, "width": 6, "height": 1},
+                    "position": {"x": 0, "y": 0, "width": 6, "height": 3},
                 },
                 {
                     "widget": {
@@ -479,9 +583,21 @@ def _build_dashboard_template(
                                 }
                             }
                         ],
-                        "spec": {"type": "table", "title": "Unmonitored Tables"},
+                        "spec": {
+                            "version": 2,
+                            "widgetType": "table",
+                            "encodings": {
+                                "columns": [
+                                    {"fieldName": "source_table_name", "displayName": "Table"},
+                                    {"fieldName": "schema_name", "displayName": "Schema"},
+                                    {"fieldName": "owner", "displayName": "Owner"},
+                                    {"fieldName": "reason", "displayName": "Reason"},
+                                ],
+                            },
+                            "frame": {"showTitle": True, "title": "Unmonitored Tables"},
+                        },
                     },
-                    "position": {"x": 0, "y": 1, "width": 6, "height": 2},
+                    "position": {"x": 0, "y": 3, "width": 6, "height": 5},
                 },
                 {
                     "widget": {
@@ -500,9 +616,21 @@ def _build_dashboard_template(
                                 }
                             }
                         ],
-                        "spec": {"type": "table", "title": "Stale Monitors"},
+                        "spec": {
+                            "version": 2,
+                            "widgetType": "table",
+                            "encodings": {
+                                "columns": [
+                                    {"fieldName": "source_table_name", "displayName": "Table"},
+                                    {"fieldName": "monitor_id", "displayName": "Monitor ID"},
+                                    {"fieldName": "days_since_refresh", "displayName": "Days Since Refresh"},
+                                    {"fieldName": "status", "displayName": "Status"},
+                                ],
+                            },
+                            "frame": {"showTitle": True, "title": "Stale Monitors"},
+                        },
                     },
-                    "position": {"x": 0, "y": 3, "width": 6, "height": 2},
+                    "position": {"x": 0, "y": 8, "width": 6, "height": 5},
                 },
                 {
                     "widget": {
@@ -520,9 +648,20 @@ def _build_dashboard_template(
                                 }
                             }
                         ],
-                        "spec": {"type": "table", "title": "Orphan Monitors"},
+                        "spec": {
+                            "version": 2,
+                            "widgetType": "table",
+                            "encodings": {
+                                "columns": [
+                                    {"fieldName": "source_table_name", "displayName": "Table"},
+                                    {"fieldName": "monitor_id", "displayName": "Monitor ID"},
+                                    {"fieldName": "reason", "displayName": "Reason"},
+                                ],
+                            },
+                            "frame": {"showTitle": True, "title": "Orphan Monitors"},
+                        },
                     },
-                    "position": {"x": 0, "y": 5, "width": 6, "height": 2},
+                    "position": {"x": 0, "y": 13, "width": 6, "height": 5},
                 },
             ],
         }
@@ -548,11 +687,13 @@ def _build_dashboard_template(
                             }
                         }],
                         "spec": {
-                            "type": "counter",
+                            "version": 2,
+                            "widgetType": "counter",
                             "encodings": {"value": {"fieldName": "models_monitored", "displayName": "Models Monitored"}},
+                            "frame": {"showTitle": True, "title": "Models Monitored"},
                         },
                     },
-                    "position": {"x": 0, "y": 0, "width": 2, "height": 1},
+                    "position": {"x": 0, "y": 0, "width": 2, "height": 3},
                 },
                 {
                     "widget": {
@@ -569,15 +710,17 @@ def _build_dashboard_template(
                             }
                         }],
                         "spec": {
-                            "type": "line",
+                            "version": 3,
+                            "widgetType": "line",
                             "encodings": {
-                                "x": {"fieldName": "window_end", "scale": {"type": "temporal"}},
-                                "y": {"fieldName": "score", "scale": {"type": "quantitative"}},
-                                "color": {"fieldName": "source_table_name"},
+                                "x": {"fieldName": "window_end", "scale": {"type": "temporal"}, "displayName": "Window End"},
+                                "y": {"fieldName": "score", "scale": {"type": "quantitative"}, "displayName": "Score"},
+                                "color": {"fieldName": "source_table_name", "scale": {"type": "categorical"}, "displayName": "Model"},
                             },
+                            "frame": {"showTitle": True, "title": "Performance Trend"},
                         },
                     },
-                    "position": {"x": 2, "y": 0, "width": 4, "height": 2},
+                    "position": {"x": 2, "y": 0, "width": 4, "height": 3},
                 },
                 {
                     "widget": {
@@ -596,9 +739,23 @@ def _build_dashboard_template(
                                 "disaggregated": False,
                             }
                         }],
-                        "spec": {"type": "table", "title": "Model Performance Summary"},
+                        "spec": {
+                            "version": 2,
+                            "widgetType": "table",
+                            "encodings": {
+                                "columns": [
+                                    {"fieldName": "source_table_name", "displayName": "Model"},
+                                    {"fieldName": "accuracy_score", "displayName": "Accuracy"},
+                                    {"fieldName": "r2_score", "displayName": "R2"},
+                                    {"fieldName": "f1_weighted", "displayName": "F1 Weighted"},
+                                    {"fieldName": "precision_weighted", "displayName": "Precision Weighted"},
+                                    {"fieldName": "owner", "displayName": "Owner"},
+                                ],
+                            },
+                            "frame": {"showTitle": True, "title": "Model Performance Summary"},
+                        },
                     },
-                    "position": {"x": 0, "y": 2, "width": 6, "height": 3},
+                    "position": {"x": 0, "y": 3, "width": 6, "height": 5},
                 },
                 {
                     "widget": {
@@ -615,15 +772,17 @@ def _build_dashboard_template(
                             }
                         }],
                         "spec": {
-                            "type": "scatter",
+                            "version": 3,
+                            "widgetType": "scatter",
                             "encodings": {
-                                "x": {"fieldName": "max_js_distance", "scale": {"type": "quantitative"}},
-                                "y": {"fieldName": "score", "scale": {"type": "quantitative"}},
-                                "color": {"fieldName": "source_table_name"},
+                                "x": {"fieldName": "max_js_distance", "scale": {"type": "quantitative"}, "displayName": "Max JS Distance"},
+                                "y": {"fieldName": "score", "scale": {"type": "quantitative"}, "displayName": "Score"},
+                                "color": {"fieldName": "source_table_name", "scale": {"type": "categorical"}, "displayName": "Model"},
                             },
+                            "frame": {"showTitle": True, "title": "Performance vs Drift"},
                         },
                     },
-                    "position": {"x": 0, "y": 5, "width": 6, "height": 3},
+                    "position": {"x": 0, "y": 8, "width": 6, "height": 5},
                 },
             ],
         }
@@ -787,36 +946,15 @@ class DashboardProvisioner:
             pass
 
         try:
-            existing = self._find_existing_dashboard(name, parent_path)
-
-            if existing:
-                logger.info(f"Updating existing dashboard: {existing.dashboard_id}")
-                dashboard = self.w.lakeview.update(
-                    dashboard_id=existing.dashboard_id,
-                    dashboard=Dashboard(
-                        display_name=name,
-                        serialized_dashboard=json.dumps(template),
-                    ),
-                )
-            else:
-                dashboard = self.w.lakeview.create(
-                    dashboard=Dashboard(
-                        display_name=name,
-                        parent_path=parent_path,
-                        serialized_dashboard=json.dumps(template),
-                    ),
-                )
-
-            dashboard_id = dashboard.dashboard_id
+            dashboard_id = self._create_or_update_dashboard(name, parent_path, template)
             logger.info(f"Dashboard deployed successfully: {dashboard_id}")
             return dashboard_id
-
         except Exception as e:
             logger.error(f"Failed to deploy dashboard: {e}")
             raise
 
     def _find_existing_dashboard(self, name: str, parent_path: str):
-        """Find existing dashboard with same name."""
+        """Find existing dashboard with same name via Lakeview list API."""
         try:
             dashboards = self.w.lakeview.list(path=parent_path)
             for d in dashboards:
@@ -825,6 +963,74 @@ class DashboardProvisioner:
         except Exception:
             pass
         return None
+
+    def _resolve_dashboard_by_path(self, name: str, parent_path: str) -> Optional[str]:
+        """Resolve dashboard ID from its workspace file path.
+
+        Falls back to the Workspace get-status API when lakeview.list fails
+        to locate a dashboard that already exists on disk.
+        """
+        file_path = f"{parent_path}/{name}.lvdash.json"
+        try:
+            status = self.w.workspace.get_status(file_path)
+            if status and status.resource_id:
+                return status.resource_id
+        except Exception:
+            pass
+        return None
+
+    def _create_or_update_dashboard(
+        self, name: str, parent_path: str, template: dict
+    ) -> str:
+        """Create a new dashboard or update it if one already exists.
+
+        Handles the race where lakeview.list misses an existing dashboard
+        and lakeview.create raises ResourceAlreadyExists.
+        """
+        _normalize_template(template)
+        serialized = json.dumps(template)
+        wh_id = getattr(self.config, "warehouse_id", None)
+        existing = self._find_existing_dashboard(name, parent_path)
+
+        if existing:
+            logger.info(f"Updating existing dashboard: {existing.dashboard_id}")
+            dashboard = self.w.lakeview.update(
+                dashboard_id=existing.dashboard_id,
+                dashboard=Dashboard(
+                    display_name=name,
+                    serialized_dashboard=serialized,
+                    warehouse_id=wh_id,
+                ),
+            )
+            return dashboard.dashboard_id
+
+        try:
+            dashboard = self.w.lakeview.create(
+                dashboard=Dashboard(
+                    display_name=name,
+                    parent_path=parent_path,
+                    serialized_dashboard=serialized,
+                    warehouse_id=wh_id,
+                ),
+            )
+            return dashboard.dashboard_id
+        except ResourceAlreadyExists:
+            logger.warning(
+                f"Dashboard '{name}' already exists but was not found via list API; "
+                "resolving by workspace path"
+            )
+            dashboard_id = self._resolve_dashboard_by_path(name, parent_path)
+            if dashboard_id:
+                dashboard = self.w.lakeview.update(
+                    dashboard_id=dashboard_id,
+                    dashboard=Dashboard(
+                        display_name=name,
+                        serialized_dashboard=serialized,
+                        warehouse_id=wh_id,
+                    ),
+                )
+                return dashboard.dashboard_id
+            raise
 
     def get_dashboard_url(self, dashboard_id: str) -> str:
         """Get the URL for a dashboard."""
@@ -918,9 +1124,20 @@ class DashboardProvisioner:
                                         "disaggregated": False,
                                     }
                                 }],
-                                "spec": {"type": "table", "title": "Group Summary"},
+                                "spec": {
+                                    "version": 2,
+                                    "widgetType": "table",
+                                    "encodings": {
+                                        "columns": [
+                                            {"fieldName": "monitor_group", "displayName": "Group"},
+                                            {"fieldName": "tables_monitored", "displayName": "Tables Monitored"},
+                                            {"fieldName": "critical_alerts", "displayName": "Critical Alerts"},
+                                        ],
+                                    },
+                                    "frame": {"showTitle": True, "title": "Group Summary"},
+                                },
                             },
-                            "position": {"x": 0, "y": 0, "width": 6, "height": 2},
+                            "position": {"x": 0, "y": 0, "width": 6, "height": 5},
                         },
                         {
                             "widget": {
@@ -936,9 +1153,20 @@ class DashboardProvisioner:
                                         "disaggregated": False,
                                     }
                                 }],
-                                "spec": {"type": "table", "title": "Cross-Group Worst Drifters"},
+                                "spec": {
+                                    "version": 2,
+                                    "widgetType": "table",
+                                    "encodings": {
+                                        "columns": [
+                                            {"fieldName": "source_table_name", "displayName": "Table"},
+                                            {"fieldName": "monitor_group", "displayName": "Group"},
+                                            {"fieldName": "max_drift", "displayName": "Max Drift"},
+                                        ],
+                                    },
+                                    "frame": {"showTitle": True, "title": "Cross-Group Worst Drifters"},
+                                },
                             },
-                            "position": {"x": 0, "y": 2, "width": 6, "height": 3},
+                            "position": {"x": 0, "y": 5, "width": 6, "height": 5},
                         },
                         {
                             "widget": {
@@ -954,14 +1182,16 @@ class DashboardProvisioner:
                                     }
                                 }],
                                 "spec": {
-                                    "type": "bar",
+                                    "version": 3,
+                                    "widgetType": "bar",
                                     "encodings": {
-                                        "x": {"fieldName": "monitor_group", "scale": {"type": "ordinal"}},
-                                        "y": {"fieldName": "avg_drift", "scale": {"type": "quantitative"}},
+                                        "x": {"fieldName": "monitor_group", "scale": {"type": "categorical"}, "displayName": "Group"},
+                                        "y": {"fieldName": "avg_drift", "scale": {"type": "quantitative"}, "displayName": "Avg Drift"},
                                     },
+                                    "frame": {"showTitle": True, "title": "Group Health"},
                                 },
                             },
-                            "position": {"x": 0, "y": 5, "width": 6, "height": 2},
+                            "position": {"x": 0, "y": 10, "width": 6, "height": 5},
                         },
                     ],
                 },
@@ -989,30 +1219,9 @@ class DashboardProvisioner:
             pass
 
         try:
-            existing = self._find_existing_dashboard(name, parent_path)
-
-            if existing:
-                logger.info(f"Updating existing rollup dashboard: {existing.dashboard_id}")
-                dashboard = self.w.lakeview.update(
-                    dashboard_id=existing.dashboard_id,
-                    dashboard=Dashboard(
-                        display_name=name,
-                        serialized_dashboard=json.dumps(template),
-                    ),
-                )
-            else:
-                dashboard = self.w.lakeview.create(
-                    dashboard=Dashboard(
-                        display_name=name,
-                        parent_path=parent_path,
-                        serialized_dashboard=json.dumps(template),
-                    ),
-                )
-
-            dashboard_id = dashboard.dashboard_id
+            dashboard_id = self._create_or_update_dashboard(name, parent_path, template)
             logger.info(f"Executive rollup dashboard deployed: {dashboard_id}")
             return dashboard_id
-
         except Exception as e:
             logger.error(f"Failed to deploy executive rollup dashboard: {e}")
             raise
@@ -1084,12 +1293,14 @@ class DashboardProvisioner:
                 {
                     "name": "main",
                     "displayName": f"Drift Analysis - {table_name.split('.')[-1]}",
+                    "pageType": "PAGE_TYPE_CANVAS",
                     "layout": [
                         {
                             "widget": {
                                 "name": "drift_timeline",
                                 "queries": [
                                     {
+                                        "name": "main_query",
                                         "query": {
                                             "datasetName": "table_drift",
                                             "fields": [
@@ -1111,12 +1322,14 @@ class DashboardProvisioner:
                                     }
                                 ],
                                 "spec": {
-                                    "type": "line",
+                                    "version": 3,
+                                    "widgetType": "line",
                                     "encodings": {
-                                        "x": {"fieldName": "window_end"},
-                                        "y": {"fieldName": "js_distance"},
-                                        "color": {"fieldName": "column_name"},
+                                        "x": {"fieldName": "window_end", "scale": {"type": "temporal"}, "displayName": "Window End"},
+                                        "y": {"fieldName": "js_distance", "scale": {"type": "quantitative"}, "displayName": "JS Distance"},
+                                        "color": {"fieldName": "column_name", "scale": {"type": "categorical"}, "displayName": "Column"},
                                     },
+                                    "frame": {"showTitle": True, "title": "Drift Timeline"},
                                 },
                             }
                         }
@@ -1127,7 +1340,7 @@ class DashboardProvisioner:
                 {
                     "name": "table_drift",
                     "displayName": f"Drift Metrics - {table_name.split('.')[-1]}",
-                    "query": f"SELECT * FROM {unified_view} WHERE source_table_name = '{table_name}'",
+                    "queryLines": [f"SELECT * FROM {unified_view} WHERE source_table_name = '{table_name}'"],
                 }
             ],
         }
