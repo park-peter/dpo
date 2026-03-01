@@ -98,7 +98,7 @@ monitored_tables:
 from dpo import run_orchestration, load_config
 
 config = load_config("configs/my_config.yaml")
-report = run_orchestration(config)
+report = run_orchestration(config, dry_run=False)
 print(f"Created {report.monitors_created} monitors")
 ```
 

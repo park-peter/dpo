@@ -125,7 +125,7 @@ print(f"Tags: {config_discovery.discovery.include_tags}")
 config = config_config_driven  # or config_discovery
 
 # Preview what would happen
-report = run_orchestration(config)
+report = run_orchestration(config, dry_run=True)
 
 print(f"\n{'='*60}")
 print("DRY RUN COMPLETE - No changes made")
@@ -134,7 +134,7 @@ print(f"Tables processed: {report.tables_discovered}")
 print(f"Monitors would be created: {report.monitors_created}")
 print(f"Monitors would be updated: {report.monitors_updated}")
 print(f"Monitors skipped: {report.monitors_skipped}")
-print(f"\n(Set dry_run=False to execute)")
+print(f"\n(Use run_orchestration(config, dry_run=False) to execute)")
 
 # COMMAND ----------
 
@@ -143,11 +143,8 @@ print(f"\n(Set dry_run=False to execute)")
 
 # COMMAND ----------
 
-# When ready, disable dry_run
-config.dry_run = False
-
 # Run bulk provisioning
-report = run_orchestration(config)
+report = run_orchestration(config, dry_run=False)
 
 print(f"\n{'='*60}")
 print("BULK PROVISIONING COMPLETE")
