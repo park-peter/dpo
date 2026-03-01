@@ -374,13 +374,13 @@ print("\nDrift will be computed against each table's specific training data!")
 from dpo import run_orchestration
 
 # Run 1: Monitor all ML models with INFERENCE
-# report_inference = run_orchestration(config_inference)
+# report_inference = run_orchestration(config_inference, dry_run=False)
 
 # Run 2: Monitor event tables with TIMESERIES  
-# report_timeseries = run_orchestration(config_timeseries)
+# report_timeseries = run_orchestration(config_timeseries, dry_run=False)
 
 # Run 3: Monitor dimension tables with SNAPSHOT
-# report_snapshot = run_orchestration(config_snapshot)
+# report_snapshot = run_orchestration(config_snapshot, dry_run=False)
 
 print("Run each config separately to monitor different table types!")
 print("\nOr use monitored_tables to combine different settings in one config.")
@@ -391,7 +391,7 @@ print("\nOr use monitored_tables to combine different settings in one config.")
 # MAGIC ## Next Steps
 # MAGIC 
 # MAGIC 1. Define your tables in `monitored_tables` with appropriate settings
-# MAGIC 2. Start with `dry_run=True` to preview monitor creation
-# MAGIC 3. Execute with `dry_run=False` to create monitors
+# MAGIC 2. Start with `run_orchestration(config, dry_run=True)` to preview monitor creation
+# MAGIC 3. Execute with `run_orchestration(config, dry_run=False)` to create monitors
 # MAGIC 4. Check the unified views for aggregated metrics
 # MAGIC 5. Set up alerts for drift and data quality issues

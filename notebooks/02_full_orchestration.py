@@ -239,7 +239,7 @@ config = config_inference  # or config_snapshot, config_timeseries, config_disco
 from dpo import run_orchestration
 
 # Run orchestration
-report = run_orchestration(config)
+report = run_orchestration(config, dry_run=True)
 
 print("\n" + "=" * 60)
 print("ORCHESTRATION REPORT")
@@ -274,8 +274,7 @@ for group, dashboard_id in report.dashboard_ids.items():
 # COMMAND ----------
 
 # Uncomment to execute for real
-# config.dry_run = False
-# report = run_orchestration(config)
+# report = run_orchestration(config, dry_run=False)
 
 # COMMAND ----------
 
@@ -377,14 +376,14 @@ else:
 # MAGIC -- SELECT 
 # MAGIC --     source_table_name,
 # MAGIC --     column_name,
-# MAGIC --     js_divergence,
+# MAGIC --     js_distance,
 # MAGIC --     chi_square_statistic,
 # MAGIC --     drift_type,
 # MAGIC --     owner,
 # MAGIC --     department
 # MAGIC -- FROM prod.global_monitoring.unified_drift_metrics_default
-# MAGIC -- WHERE js_divergence >= 0.1
-# MAGIC -- ORDER BY js_divergence DESC
+# MAGIC -- WHERE js_distance >= 0.1
+# MAGIC -- ORDER BY js_distance DESC
 # MAGIC -- LIMIT 100
 
 # COMMAND ----------

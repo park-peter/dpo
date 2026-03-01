@@ -99,18 +99,18 @@ SELECT
     owner,
     department,
     column_name,
-    js_divergence,
+    js_distance,
     chi_square_statistic,
     drift_type,
     CASE 
-        WHEN js_divergence >= {threshold} THEN 'CRITICAL'
-        WHEN js_divergence >= {warning_threshold} THEN 'WARNING'
+        WHEN js_distance >= {threshold} THEN 'CRITICAL'
+        WHEN js_distance >= {warning_threshold} THEN 'WARNING'
     END as severity,
     window_start,
     window_end
 FROM {unified_drift_view}
-WHERE js_divergence >= {warning_threshold}
-ORDER BY js_divergence DESC
+WHERE js_distance >= {warning_threshold}
+ORDER BY js_distance DESC
 LIMIT 100
 """)
 
@@ -197,7 +197,7 @@ for name, sql in queries.items():
 custom_ddl = alerter.generate_custom_alert_ddl(
     unified_view=unified_drift_view,
     table_name="prod.retail.customer_predictions",
-    business_rule="window_end >= current_date() - INTERVAL 60 DAYS AND js_divergence >= 0.15",
+    business_rule="window_end >= current_date() - INTERVAL 60 DAYS AND js_distance >= 0.15",
     alert_name="Custom: 60-Day Retail Drift Alert",
 )
 
@@ -233,11 +233,11 @@ WITH drift_issues AS (
         owner,
         'DRIFT' as issue_category,
         column_name as affected_column,
-        js_divergence as metric_value,
+        js_distance as metric_value,
         'JS Divergence' as metric_name,
-        CASE WHEN js_divergence >= {threshold} THEN 'CRITICAL' ELSE 'WARNING' END as severity
+        CASE WHEN js_distance >= {threshold} THEN 'CRITICAL' ELSE 'WARNING' END as severity
     FROM {unified_drift_view}
-    WHERE js_divergence >= {warning_threshold}
+    WHERE js_distance >= {warning_threshold}
 ),
 quality_issues AS (
     SELECT 
@@ -273,7 +273,7 @@ print(combined_query)
 # MAGIC 3. Go to **Alerts** > **Create Alert**
 # MAGIC 4. Select your query
 # MAGIC 5. Configure:
-# MAGIC    - **Trigger when**: `js_divergence` >= 0.1
+# MAGIC    - **Trigger when**: `js_distance` >= 0.1
 # MAGIC    - **Refresh**: Every 1 hour
 # MAGIC    - **Notifications**: Add email/webhook destinations
 # MAGIC 

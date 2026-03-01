@@ -156,7 +156,7 @@ print(f"  default: {config.alerting.default_notifications}")
 # COMMAND ----------
 
 # Preview what would happen
-report = run_orchestration(config)
+report = run_orchestration(config, dry_run=True)
 
 print(f"\n{'='*60}")
 print("DRY RUN COMPLETE")
@@ -173,11 +173,8 @@ for group, view in report.unified_drift_views.items():
 
 # COMMAND ----------
 
-# When ready, disable dry_run
-config.dry_run = False
-
 # Run full orchestration
-report = run_orchestration(config)
+report = run_orchestration(config, dry_run=False)
 
 print(f"\n{'='*60}")
 print("ORCHESTRATION COMPLETE")
@@ -216,11 +213,11 @@ for group, dashboard_id in report.dashboard_ids.items():
 # MAGIC -- SELECT 
 # MAGIC --     source_table_name,
 # MAGIC --     column_name,
-# MAGIC --     js_divergence,
+# MAGIC --     js_distance,
 # MAGIC --     window_end
 # MAGIC -- FROM prod.global_monitoring.unified_drift_metrics_ml_team
-# MAGIC -- WHERE js_divergence > 0.1
-# MAGIC -- ORDER BY js_divergence DESC
+# MAGIC -- WHERE js_distance > 0.1
+# MAGIC -- ORDER BY js_distance DESC
 # MAGIC -- LIMIT 10
 
 # COMMAND ----------
@@ -230,11 +227,11 @@ for group, dashboard_id in report.dashboard_ids.items():
 # MAGIC -- SELECT 
 # MAGIC --     source_table_name,
 # MAGIC --     column_name,
-# MAGIC --     js_divergence,
+# MAGIC --     js_distance,
 # MAGIC --     window_end
 # MAGIC -- FROM prod.global_monitoring.unified_drift_metrics_data_eng
-# MAGIC -- WHERE js_divergence > 0.1
-# MAGIC -- ORDER BY js_divergence DESC
+# MAGIC -- WHERE js_distance > 0.1
+# MAGIC -- ORDER BY js_distance DESC
 # MAGIC -- LIMIT 10
 
 # COMMAND ----------
