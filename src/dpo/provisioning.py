@@ -475,9 +475,31 @@ class ProfileProvisioner:
                     if "already exists" in str(create_err).lower():
                         logger.warning(
                             "Monitor already exists for %s but was not detected by "
-                            "get_monitor; treating as no_change",
+                            "get_monitor; reconciling against existing monitor",
                             table.full_name,
                         )
+                        existing_after_conflict = self._get_existing_monitor(table)
+                        if not existing_after_conflict:
+                            raise create_err
+
+                        if self._has_config_drift(existing_after_conflict, table):
+                            self.w.data_quality.update_monitor(
+                                object_type="table",
+                                object_id=table_info.table_id,
+                                monitor=monitor_obj,
+                                update_mask="data_profiling_config",
+                            )
+                            logger.info(
+                                "Updated monitor for %s after create conflict",
+                                table.full_name,
+                            )
+                            return ProvisioningResult(
+                                table_name=table.full_name,
+                                action="updated",
+                                success=True,
+                                config_hash=config_hash,
+                            )
+
                         return ProvisioningResult(
                             table_name=table.full_name,
                             action="no_change",

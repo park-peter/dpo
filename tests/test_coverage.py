@@ -413,6 +413,27 @@ class TestCoverageAnalyzer:
         assert len(stale) == 1
         assert stale[0].status == "PAUSED"
 
+    def test_find_stale_active_monitor_with_refresh_error_is_flagged(
+        self, mock_w, coverage_config
+    ):
+        """Refresh lookup errors should not silently hide ACTIVE monitors."""
+        status = MagicMock()
+        status.value = "ACTIVE"
+        cfg = MagicMock()
+        cfg.status = status
+        monitor = MagicMock()
+        monitor.data_profiling_config = cfg
+        mock_w.data_quality.get_monitor.return_value = monitor
+        mock_w.data_quality.list_refresh.side_effect = RuntimeError("refresh list failed")
+        table_info = MagicMock()
+        table_info.full_name = "test_catalog.ml.model_a"
+        mock_w.tables.get.return_value = table_info
+
+        analyzer = CoverageAnalyzer(mock_w, coverage_config)
+        stale = analyzer._find_stale({"obj1": "m1"})
+        assert len(stale) == 1
+        assert stale[0].status == "ACTIVE"
+
     def test_find_stale_handles_monitor_fetch_error(self, mock_w, coverage_config):
         """Monitor fetch failures should be skipped safely."""
         mock_w.data_quality.get_monitor.side_effect = RuntimeError("monitor fetch failed")
