@@ -9,6 +9,7 @@ from databricks.sdk.errors import NotFound
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
+
     from dpo.config import OrchestratorConfig
 
 logger = logging.getLogger(__name__)

@@ -7,6 +7,7 @@ import pytest
 from dpo.aggregator import MetricsAggregator
 from dpo.discovery import DiscoveredTable
 
+
 class TestMetricsAggregator:
     """Tests for MetricsAggregator class."""
 
