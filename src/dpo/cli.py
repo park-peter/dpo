@@ -243,8 +243,9 @@ def validate(ctx, config_path, check_workspace, output_format):
 
         # UC function validation for objective functions
         if config.objective_functions:
-            from dpo.validators import validate_uc_functions
             from databricks.sdk import WorkspaceClient
+
+            from dpo.validators import validate_uc_functions
             try:
                 w = WorkspaceClient()
                 uc_issues = validate_uc_functions(config, w)

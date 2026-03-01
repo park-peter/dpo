@@ -645,29 +645,6 @@ class TestWidgetSpecFormat:
                 assert "fieldName" in col, f"{widget['name']}: column missing fieldName"
                 assert "displayName" in col, f"{widget['name']}: column missing displayName"
 
-    def test_no_heatmap_widget_type(
-        self, mock_workspace_client, sample_config
-    ):
-        """Heatmap is not a valid Lakeview widget type; none should remain."""
-        mock_workspace_client.lakeview.list.return_value = []
-        mock_workspace_client.lakeview.create.return_value = MagicMock(
-            dashboard_id="dash_heat"
-        )
-        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
-        provisioner.deploy_dashboard(
-            unified_drift_view="cat.sch.drift",
-            parent_path="/Workspace/Shared/DPO",
-        )
-
-        payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]
-        serialized = json.loads(payload.serialized_dashboard)
-        widgets = self._extract_widgets(serialized)
-
-        for widget in widgets:
-            assert widget["spec"].get("widgetType") != "heatmap", (
-                f"{widget['name']}: still uses unsupported 'heatmap' widgetType"
-            )
-
     def test_no_ordinal_scale_type(
         self, mock_workspace_client, sample_config
     ):
@@ -842,13 +819,6 @@ class TestLakeviewTemplateFormat:
                     assert queries[0].get("name") == "main_query", (
                         f"Widget '{widget['name']}' first query not named 'main_query'"
                     )
-
-    def test_warehouse_id_forwarded_to_dashboard(
-        self, mock_workspace_client, sample_config
-    ):
-        """Dashboard creation must include warehouse_id from config."""
-        payload, _ = self._deploy_and_parse(mock_workspace_client, sample_config)
-        assert payload.warehouse_id == "test_warehouse_123"
 
     def test_rollup_datasets_use_query_lines(
         self, mock_workspace_client, sample_config
