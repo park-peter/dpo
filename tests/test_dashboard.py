@@ -61,6 +61,71 @@ class TestDashboardProvisioner:
         # warehouse_id is forwarded from config
         assert dashboard_payload.warehouse_id == "test_warehouse_123"
 
+    def test_deploy_dashboard_uses_empty_perf_datasets_when_perf_view_unavailable(
+        self, mock_workspace_client, sample_config
+    ):
+        """If no performance view is provided/resolvable, performance datasets should be valid empty queries."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(
+            dashboard_id="dash_123"
+        )
+        mock_workspace_client.tables.get.side_effect = RuntimeError("not found")
+
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        dashboard_id = provisioner.deploy_dashboard(
+            unified_drift_view="test_catalog.global_monitoring.unified_drift_metrics_default",
+            parent_path="/Workspace/Shared/DPO",
+            unified_performance_view=None,
+        )
+
+        assert dashboard_id == "dash_123"
+        dashboard_payload = mock_workspace_client.lakeview.create.call_args.kwargs[
+            "dashboard"
+        ]
+        serialized = json.loads(dashboard_payload.serialized_dashboard)
+        ds_by_name = {ds["name"]: ds for ds in serialized["datasets"]}
+        perf_query = ds_by_name["unified_performance"]["queryLines"][0]
+        perf_vs_drift_query = ds_by_name["perf_vs_drift"]["queryLines"][0]
+        assert "WHERE 1=0" in perf_query
+        assert "WHERE 1=0" in perf_vs_drift_query
+        assert "unified_performance_metrics_default" not in perf_query
+
+    def test_deploy_dashboard_uses_empty_profile_dataset_when_profile_view_unavailable(
+        self, mock_workspace_client, sample_config
+    ):
+        """If profile view is not provided/resolvable, unified_profile dataset should remain valid."""
+        mock_workspace_client.lakeview.list.return_value = []
+        mock_workspace_client.lakeview.create.return_value = MagicMock(
+            dashboard_id="dash_123"
+        )
+
+        def _tables_get(**kwargs):
+            full_name = kwargs.get("full_name")
+            if full_name and "_profile" in full_name:
+                raise RuntimeError("profile view not found")
+            info = MagicMock()
+            info.full_name = full_name or "test_catalog.global_monitoring.unified_performance_metrics_default"
+            return info
+
+        mock_workspace_client.tables.get.side_effect = _tables_get
+
+        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
+        dashboard_id = provisioner.deploy_dashboard(
+            unified_drift_view="test_catalog.global_monitoring.unified_drift_metrics_default",
+            parent_path="/Workspace/Shared/DPO",
+            unified_profile_view=None,
+            unified_performance_view=None,
+        )
+
+        assert dashboard_id == "dash_123"
+        dashboard_payload = mock_workspace_client.lakeview.create.call_args.kwargs[
+            "dashboard"
+        ]
+        serialized = json.loads(dashboard_payload.serialized_dashboard)
+        ds_by_name = {ds["name"]: ds for ds in serialized["datasets"]}
+        profile_query = ds_by_name["unified_profile"]["queryLines"][0]
+        assert "WHERE 1=0" in profile_query
+
     def test_deploy_dashboard_updates_when_existing(
         self, mock_workspace_client, sample_config
     ):
@@ -349,6 +414,8 @@ class TestDashboardProvisioner:
         drift_query = next(
             ds["queryLines"][0] for ds in serialized["datasets"] if ds["name"] == "rollup_drift"
         )
+        dataset_names = {ds["name"] for ds in serialized["datasets"]}
+        assert dataset_names == {"rollup_drift"}
         assert "O''Reilly" in drift_query
         assert "O'Reilly" not in drift_query
 

@@ -141,6 +141,84 @@ def _build_coverage_queries(coverage_report: Optional[CoverageReport]) -> Dict[s
     }
 
 
+def _empty_unified_performance_query() -> str:
+    """Return an empty but schema-compatible unified performance dataset query."""
+    return """
+        SELECT
+            CAST(NULL AS TIMESTAMP) AS window_start,
+            CAST(NULL AS TIMESTAMP) AS window_end,
+            CAST(NULL AS STRING) AS granularity,
+            CAST(NULL AS STRING) AS column_name,
+            CAST(NULL AS DOUBLE) AS accuracy_score,
+            CAST(NULL AS DOUBLE) AS log_loss,
+            CAST(NULL AS DOUBLE) AS precision_weighted,
+            CAST(NULL AS DOUBLE) AS recall_weighted,
+            CAST(NULL AS DOUBLE) AS f1_weighted,
+            CAST(NULL AS DOUBLE) AS roc_auc_weighted,
+            CAST(NULL AS DOUBLE) AS predictive_parity,
+            CAST(NULL AS DOUBLE) AS predictive_equality,
+            CAST(NULL AS DOUBLE) AS equal_opportunity,
+            CAST(NULL AS DOUBLE) AS statistical_parity,
+            CAST(NULL AS DOUBLE) AS mean_squared_error,
+            CAST(NULL AS DOUBLE) AS root_mean_squared_error,
+            CAST(NULL AS DOUBLE) AS mean_average_error,
+            CAST(NULL AS DOUBLE) AS mean_absolute_percentage_error,
+            CAST(NULL AS DOUBLE) AS r2_score,
+            CAST(NULL AS STRING) AS slice_key,
+            CAST(NULL AS STRING) AS slice_value,
+            CAST(NULL AS STRING) AS source_table_name,
+            CAST(NULL AS STRING) AS owner
+        WHERE 1=0
+    """
+
+
+def _empty_unified_profile_query() -> str:
+    """Return an empty but schema-compatible unified profile dataset query."""
+    return """
+        SELECT
+            CAST(NULL AS TIMESTAMP) AS window_start,
+            CAST(NULL AS TIMESTAMP) AS window_end,
+            CAST(NULL AS STRING) AS column_name,
+            CAST(NULL AS BIGINT) AS record_count,
+            CAST(NULL AS BIGINT) AS null_count,
+            CAST(NULL AS DOUBLE) AS null_rate,
+            CAST(NULL AS BIGINT) AS distinct_count,
+            CAST(NULL AS DOUBLE) AS mean,
+            CAST(NULL AS DOUBLE) AS stddev,
+            CAST(NULL AS DOUBLE) AS min_value,
+            CAST(NULL AS DOUBLE) AS max_value,
+            CAST(NULL AS STRING) AS granularity,
+            CAST(NULL AS STRING) AS slice_key,
+            CAST(NULL AS STRING) AS slice_value,
+            CAST(NULL AS STRING) AS source_table_name,
+            CAST(NULL AS STRING) AS owner,
+            CAST(NULL AS STRING) AS department,
+            CAST(NULL AS INT) AS priority,
+            CAST(NULL AS STRING) AS runbook_url,
+            CAST(NULL AS STRING) AS lineage_url
+        WHERE 1=0
+    """
+
+
+def _empty_perf_vs_drift_query() -> str:
+    """Return an empty but schema-compatible performance-vs-drift dataset query."""
+    return """
+        SELECT
+            CAST(NULL AS STRING) AS source_table_name,
+            CAST(NULL AS TIMESTAMP) AS window_start,
+            CAST(NULL AS TIMESTAMP) AS window_end,
+            CAST(NULL AS STRING) AS granularity,
+            CAST(NULL AS DOUBLE) AS accuracy_score,
+            CAST(NULL AS DOUBLE) AS r2_score,
+            CAST(NULL AS DOUBLE) AS precision_weighted,
+            CAST(NULL AS DOUBLE) AS f1_weighted,
+            CAST(NULL AS DOUBLE) AS max_js_distance,
+            CAST(NULL AS DOUBLE) AS avg_js_distance,
+            CAST(NULL AS BIGINT) AS columns_drifted
+        WHERE 1=0
+    """
+
+
 def _build_dashboard_template(
     drift_threshold: float,
     null_rate_threshold: Optional[float],
@@ -915,12 +993,36 @@ class DashboardProvisioner:
         _ensure_query_names(template)
 
         # Derive view names from the drift view when not provided
-        profile_view = unified_profile_view or unified_drift_view.replace(
-            "_drift", "_profile"
-        )
-        perf_view = unified_performance_view or unified_drift_view.replace(
-            "_drift_metrics", "_performance_metrics"
-        )
+        profile_view = unified_profile_view
+        profile_available = False
+        if profile_view:
+            profile_available = True
+        else:
+            candidate_profile_view = unified_drift_view.replace(
+                "_drift", "_profile"
+            )
+            if candidate_profile_view != unified_drift_view:
+                try:
+                    self.w.tables.get(full_name=candidate_profile_view)
+                    profile_view = candidate_profile_view
+                    profile_available = True
+                except Exception:
+                    profile_available = False
+        perf_view = unified_performance_view
+        perf_available = False
+        if perf_view:
+            perf_available = True
+        else:
+            candidate_perf_view = unified_drift_view.replace(
+                "_drift_metrics", "_performance_metrics"
+            )
+            if candidate_perf_view != unified_drift_view:
+                try:
+                    self.w.tables.get(full_name=candidate_perf_view)
+                    perf_view = candidate_perf_view
+                    perf_available = True
+                except Exception:
+                    perf_available = False
 
         # Inject actual view names into dataset queries
         coverage_queries = _build_coverage_queries(coverage_report)
@@ -929,15 +1031,24 @@ class DashboardProvisioner:
             if ds_name == "unified_drift":
                 dataset["query"] = f"SELECT * FROM {unified_drift_view}"
             elif ds_name == "unified_profile":
-                dataset["query"] = f"SELECT * FROM {profile_view}"
+                if profile_available and profile_view:
+                    dataset["query"] = f"SELECT * FROM {profile_view}"
+                else:
+                    dataset["query"] = _empty_unified_profile_query()
             elif ds_name == "unified_performance":
-                dataset["query"] = f"SELECT * FROM {perf_view}"
+                if perf_available and perf_view:
+                    dataset["query"] = f"SELECT * FROM {perf_view}"
+                else:
+                    dataset["query"] = _empty_unified_performance_query()
             elif ds_name == "perf_vs_drift":
-                dataset["query"] = dataset["query"].replace(
-                    "{unified_drift_view}", unified_drift_view
-                ).replace(
-                    "{unified_performance_view}", perf_view
-                )
+                if perf_available and perf_view:
+                    dataset["query"] = dataset["query"].replace(
+                        "{unified_drift_view}", unified_drift_view
+                    ).replace(
+                        "{unified_performance_view}", perf_view
+                    )
+                else:
+                    dataset["query"] = _empty_perf_vs_drift_query()
             elif ds_name in coverage_queries:
                 dataset["query"] = coverage_queries[ds_name]
 
@@ -1100,11 +1211,6 @@ class DashboardProvisioner:
             f"FROM {views[0]}"
             for group, views in views_by_group.items()
         )
-        profile_union = " UNION ALL ".join(
-            f"SELECT *, '{_sql_escape(group)}' as monitor_group "
-            f"FROM {views[1]}"
-            for group, views in views_by_group.items()
-        )
 
         template = {
             "displayName": "DPO Executive Rollup",
@@ -1204,11 +1310,6 @@ class DashboardProvisioner:
                     "name": "rollup_drift",
                     "displayName": "Cross-Group Drift",
                     "query": drift_union,
-                },
-                {
-                    "name": "rollup_profile",
-                    "displayName": "Cross-Group Profile",
-                    "query": profile_union,
                 },
             ],
         }

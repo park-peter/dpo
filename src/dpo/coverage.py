@@ -311,6 +311,7 @@ class CoverageAnalyzer:
 
                 last_refresh = None
                 status = "unknown"
+                refresh_lookup_failed = False
 
                 if monitor.data_profiling_config:
                     cfg = monitor.data_profiling_config
@@ -325,11 +326,15 @@ class CoverageAnalyzer:
                             if created:
                                 last_refresh = datetime.fromtimestamp(created / 1000, tz=timezone.utc) if isinstance(created, (int, float)) else created
                     except Exception:
-                        pass
+                        refresh_lookup_failed = True
 
-                if last_refresh is None and status in (
+                if (
+                    last_refresh is None
+                    and not refresh_lookup_failed
+                    and status in (
                     "DATA_PROFILING_STATUS_ACTIVE",
                     "ACTIVE",
+                    )
                 ):
                     continue
 
