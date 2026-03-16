@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, call
 import pytest
 from databricks.sdk.errors import ResourceAlreadyExists
 
-from dpo.coverage import CoverageReport, OrphanMonitor, StaleMonitor, UnmonitoredTable
 from dpo.dashboard import DashboardProvisioner
 from dpo.naming import build_group_artifact_names
 
@@ -44,12 +43,9 @@ class TestDashboardProvisioner:
         ds_by_name = {ds["name"]: ds for ds in serialized["datasets"]}
         assert "unified_drift" in ds_by_name
         assert "unified_profile" in ds_by_name
-        assert "coverage_summary" in ds_by_name
-        assert "coverage_unmonitored" in ds_by_name
-        assert "coverage_stale" in ds_by_name
-        assert "coverage_orphans" in ds_by_name
         assert "unified_performance" in ds_by_name
         assert "perf_vs_drift" in ds_by_name
+        assert not any(name.startswith("coverage_") for name in ds_by_name)
         assert ds_by_name["unified_drift"]["queryLines"] == [
             "SELECT * FROM test_catalog.global_monitoring.unified_drift_metrics"
         ]
@@ -251,7 +247,6 @@ class TestDashboardProvisioner:
                     unified_profile_view="cat.sch.unified_profile_metrics_ml_team",
                     unified_performance_view="cat.sch.unified_performance_metrics_ml_team",
                     dashboard_name="DPO Health - ml_team",
-                    coverage_report=None,
                 ),
                 call(
                     "cat.sch.unified_drift_metrics_default",
@@ -259,59 +254,9 @@ class TestDashboardProvisioner:
                     unified_profile_view="cat.sch.unified_profile_metrics_default",
                     unified_performance_view="cat.sch.unified_performance_metrics_default",
                     dashboard_name="DPO Health - default",
-                    coverage_report=None,
                 ),
             ]
         )
-
-    def test_deploy_dashboard_injects_coverage_report_queries(
-        self, mock_workspace_client, sample_config
-    ):
-        """Coverage page datasets should use CoverageAnalyzer output snapshots."""
-        mock_workspace_client.lakeview.list.return_value = []
-        mock_workspace_client.lakeview.create.return_value = MagicMock(
-            dashboard_id="dash_cov"
-        )
-        coverage_report = CoverageReport(
-            timestamp="2026-02-10T18:00:00+00:00",
-            total_catalog_tables=5,
-            total_monitored=3,
-            unmonitored=[
-                UnmonitoredTable(full_name="test_catalog.ml.unmon", schema_name="ml")
-            ],
-            stale=[
-                StaleMonitor(
-                    table_name="test_catalog.ml.stale",
-                    monitor_id="m1",
-                    days_since_refresh=45,
-                    status="ACTIVE",
-                )
-            ],
-            orphans=[
-                OrphanMonitor(table_name="test_catalog.ml.orphan", monitor_id="m2")
-            ],
-        )
-
-        provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
-        provisioner.deploy_dashboard(
-            unified_drift_view="test_catalog.global_monitoring.unified_drift_metrics",
-            parent_path="/Workspace/Shared/DPO",
-            coverage_report=coverage_report,
-        )
-
-        dashboard_payload = mock_workspace_client.lakeview.create.call_args.kwargs[
-            "dashboard"
-        ]
-        serialized = json.loads(dashboard_payload.serialized_dashboard)
-        ds_by_name = {ds["name"]: ds for ds in serialized["datasets"]}
-
-        cov_q = ds_by_name["coverage_summary"]["queryLines"][0]
-        assert "snapshot_timestamp_utc" in cov_q
-        assert "2026-02-10T18:00:00+00:00" in cov_q
-        assert "5 AS total_catalog_tables" in cov_q
-        assert "test_catalog.ml.unmon" in ds_by_name["coverage_unmonitored"]["queryLines"][0]
-        assert "test_catalog.ml.stale" in ds_by_name["coverage_stale"]["queryLines"][0]
-        assert "test_catalog.ml.orphan" in ds_by_name["coverage_orphans"]["queryLines"][0]
 
     def test_cleanup_stale_dashboards_deletes_inactive_groups(
         self, mock_workspace_client, sample_config
