@@ -11,12 +11,12 @@ DPO eliminates manual UI-based configuration by providing:
 - **Per-Table Configuration**: Baseline tables, label columns, granularity, enrichment metadata per table
 - **All Profile Types**: Support for Snapshot, TimeSeries, and Inference profiles
 - **Two Operation Modes**: Full mode for unified observability, Bulk mode for quick onboarding
-- **Monitor Groups**: Per-team/department aggregation with separate views, alerts, and dashboards
+- **Monitor Groups**: Per-team/department aggregation with group-scoped drift, profile, performance views, alerts, and dashboards
 - **Schema Validation**: Pre-flight column existence checks before creating monitors
 - **Policy Governance**: Configurable naming rules, required tags, and structural constraints
-- **Coverage Governance**: Detect unmonitored tables, stale monitors, and orphaned monitors
+- **Coverage Governance**: Separate governance workflow for unmonitored tables, stale monitors, and orphaned monitors
 - **Enriched Alerting**: Alerts carry owner, runbook URL, and lineage URL for actionable triage
-- **Unified Metrics Views**: Single "Management Plane" aggregating all profile and drift metrics
+- **Unified Metrics Views**: Group-scoped management views for drift, profile, and model performance metrics
 
 ## Installation
 
@@ -193,9 +193,9 @@ mode: "full"
 
 Creates:
 - Individual monitors per table
-- Unified views aggregating all metrics (per group)
+- Group-scoped unified views for drift, profile, and performance metrics
 - SQL Alerts (per group)
-- Lakeview dashboards (per group)
+- Lakeview dashboards (per group) plus an optional executive rollup when multiple groups are active
 
 ### Bulk Provisioning Mode
 
@@ -234,6 +234,10 @@ alerting:
     data_eng:
       - "data-eng@company.com"
 ```
+
+Validation rules for grouped deployments:
+- Monitored tables must have unique leaf table names across the run.
+- Group names must sanitize to unique SQL-safe identifiers.
 
 ## Profile Types
 
@@ -338,7 +342,7 @@ The `dpo coverage` command analyzes monitoring gaps:
 dpo coverage configs/production.yaml --format json
 ```
 
-The Lakeview dashboard includes a dedicated **Coverage Governance** page backed by `CoverageAnalyzer` output from the latest orchestration run, including a snapshot timestamp plus unmonitored/stale/orphan monitor detail tables.
+Coverage analysis is intentionally separate from `dpo dry-run` and `dpo run`. Use `dpo coverage` when you want a catalog-wide governance report, or call `CoverageAnalyzer` directly from the Python API.
 
 ## Configuration Reference
 
@@ -394,10 +398,12 @@ DPO/
 │       ├── config.py         # Pydantic config models (incl. PolicyConfig)
 │       ├── coverage.py       # Coverage governance (unmonitored/stale/orphan)
 │       ├── discovery.py      # UC table discovery + enrichment resolution
+│       ├── naming.py         # Artifact naming, slugging, and identity rules
+│       ├── planning.py       # Execution planning and upfront validation
 │       ├── provisioning.py   # Monitor lifecycle + structured ImpactReport
-│       ├── aggregator.py     # Unified views with enrichment metadata
+│       ├── aggregator.py     # Group-scoped unified views with enrichment metadata
 │       ├── alerting.py       # SQL Alerts with owner/runbook/lineage
-│       ├── dashboard.py      # Lakeview dashboard + coverage page
+│       ├── dashboard.py      # Lakeview dashboard deployment
 │       └── utils.py          # Shared utilities
 ├── configs/
 │   ├── default_profile.yaml
@@ -448,7 +454,6 @@ from dpo import (
 | `drift_alert_ids` | `Dict[str, str]` | Group → drift alert ID |
 | `dashboard_ids` | `Dict[str, str]` | Group → dashboard ID |
 | `impact_report` | `Optional[ImpactReport]` | Structured dry-run impact report |
-| `coverage_report` | `Optional[CoverageReport]` | Coverage governance analysis |
 
 ## Requirements
 
