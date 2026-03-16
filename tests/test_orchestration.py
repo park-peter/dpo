@@ -325,7 +325,7 @@ class TestBulkOrchestration:
         )
         monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
 
-        report = dpo.run_bulk_provisioning(config, dry_run=False)
+        dpo.run_bulk_provisioning(config, dry_run=False)
 
         assert events == ["provision", "cleanup"]
 
@@ -584,7 +584,7 @@ class TestFullOrchestration:
         aggregator = MagicMock()
         monkeypatch.setattr(dpo, "MetricsAggregator", MagicMock(return_value=aggregator))
 
-        report = dpo.run_orchestration(config, dry_run=False)
+        dpo.run_orchestration(config, dry_run=False)
 
         assert events == ["provision", "cleanup"]
 
@@ -662,7 +662,7 @@ class TestFullOrchestration:
             MagicMock(return_value=dashboard_provisioner),
         )
 
-        report = dpo.run_orchestration(config, dry_run=False)
+        dpo.run_orchestration(config, dry_run=False)
 
         dashboard_provisioner.deploy_dashboards_by_group.assert_called_once_with(
             {"default": replace(group_artifacts["default"], performance_view=None)},
