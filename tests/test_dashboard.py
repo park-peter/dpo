@@ -8,6 +8,7 @@ from databricks.sdk.errors import ResourceAlreadyExists
 
 from dpo.coverage import CoverageReport, OrphanMonitor, StaleMonitor, UnmonitoredTable
 from dpo.dashboard import DashboardProvisioner
+from dpo.naming import build_group_artifact_names
 
 
 class TestDashboardProvisioner:
@@ -232,12 +233,12 @@ class TestDashboardProvisioner:
         provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
         provisioner.deploy_dashboard = MagicMock(side_effect=["dash_ml", "dash_default"])
 
-        views_by_group = {
-            "ml_team": ("cat.sch.drift_ml", "cat.sch.profile_ml"),
-            "default": ("cat.sch.drift_default", "cat.sch.profile_default"),
+        group_artifacts = {
+            "ml_team": build_group_artifact_names("cat.sch", "ml_team"),
+            "default": build_group_artifact_names("cat.sch", "default"),
         }
         results = provisioner.deploy_dashboards_by_group(
-            views_by_group, "/Workspace/Shared/DPO"
+            group_artifacts, "/Workspace/Shared/DPO"
         )
 
         assert results == {"ml_team": "dash_ml", "default": "dash_default"}
@@ -245,18 +246,18 @@ class TestDashboardProvisioner:
         provisioner.deploy_dashboard.assert_has_calls(
             [
                 call(
-                    "cat.sch.drift_ml",
+                    "cat.sch.unified_drift_metrics_ml_team",
                     "/Workspace/Shared/DPO",
-                    unified_profile_view="cat.sch.profile_ml",
-                    unified_performance_view=None,
+                    unified_profile_view="cat.sch.unified_profile_metrics_ml_team",
+                    unified_performance_view="cat.sch.unified_performance_metrics_ml_team",
                     dashboard_name="DPO Health - ml_team",
                     coverage_report=None,
                 ),
                 call(
-                    "cat.sch.drift_default",
+                    "cat.sch.unified_drift_metrics_default",
                     "/Workspace/Shared/DPO",
-                    unified_profile_view="cat.sch.profile_default",
-                    unified_performance_view=None,
+                    unified_profile_view="cat.sch.unified_profile_metrics_default",
+                    unified_performance_view="cat.sch.unified_performance_metrics_default",
                     dashboard_name="DPO Health - default",
                     coverage_report=None,
                 ),
@@ -403,7 +404,7 @@ class TestDashboardProvisioner:
 
         dashboard_id = provisioner.deploy_executive_rollup(
             {
-                "O'Reilly": ("cat.gm.unified_drift_metrics_oreilly", "cat.gm.unified_profile_metrics_oreilly"),
+                "O'Reilly": build_group_artifact_names("cat.gm", "O'Reilly"),
             },
             "/Workspace/Shared/DPO",
         )
@@ -432,7 +433,7 @@ class TestDashboardProvisioner:
 
         dashboard_id = provisioner.deploy_executive_rollup(
             {
-                "default": ("cat.gm.unified_drift_metrics_default", "cat.gm.unified_profile_metrics_default"),
+                "default": build_group_artifact_names("cat.gm", "default"),
             },
             "/Workspace/Shared/DPO",
         )
@@ -503,7 +504,7 @@ class TestDashboardProvisioner:
 
         provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
         dashboard_id = provisioner.deploy_executive_rollup(
-            {"default": ("cat.gm.drift", "cat.gm.profile")},
+            {"default": build_group_artifact_names("cat.gm", "default")},
             "/Workspace/Shared/DPO",
         )
 
@@ -580,7 +581,7 @@ class TestWidgetSpecFormat:
         )
         provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
         provisioner.deploy_executive_rollup(
-            {"default": ("cat.gm.drift", "cat.gm.profile")},
+            {"default": build_group_artifact_names("cat.gm", "default")},
             "/Workspace/Shared/DPO",
         )
 
@@ -828,7 +829,7 @@ class TestLakeviewTemplateFormat:
         mock_workspace_client.lakeview.create.return_value = MagicMock(dashboard_id="r")
         provisioner = DashboardProvisioner(mock_workspace_client, sample_config)
         provisioner.deploy_executive_rollup(
-            {"default": ("cat.gm.drift", "cat.gm.profile")},
+            {"default": build_group_artifact_names("cat.gm", "default")},
             "/Workspace/Shared/DPO",
         )
         payload = mock_workspace_client.lakeview.create.call_args.kwargs["dashboard"]

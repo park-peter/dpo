@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from dpo.alerting import AlertProvisioner
+from dpo.naming import build_group_artifact_names
 
 
 class TestAlertProvisioner:
@@ -176,6 +177,24 @@ class TestDataQualityAlert:
         query_sql = alert_v2.query_text
         assert "distinct_count < 5" in query_sql
         assert "LOW_CARDINALITY" in query_sql
+
+    def test_data_quality_alert_honors_zero_null_threshold(
+        self, mock_workspace_client, sample_config
+    ):
+        """A zero null-rate threshold should still create an alert and preserve zero."""
+        sample_config.alerting.null_rate_threshold = 0.0
+        sample_config.alerting.row_count_min = None
+        sample_config.alerting.distinct_count_min = None
+
+        alerter = AlertProvisioner(mock_workspace_client, sample_config)
+        alert_id = alerter.create_data_quality_alert(
+            "catalog.schema.unified_profile", "test_catalog"
+        )
+
+        assert alert_id == "alert_123"
+        call_args = mock_workspace_client.alerts_v2.create_alert.call_args
+        alert_v2 = call_args.kwargs.get("alert")
+        assert "null_rate > 0.0" in alert_v2.query_text
 
 
 class TestCustomAlertDDL:
@@ -485,12 +504,12 @@ class TestPerGroupNotifications:
         """Test alerts are created per group."""
         alerter = AlertProvisioner(mock_workspace_client, sample_config_with_groups)
 
-        views_by_group = {
-            "ml_team": ("cat.sch.drift_ml", "cat.sch.profile_ml"),
-            "data_eng": ("cat.sch.drift_data", "cat.sch.profile_data"),
+        group_artifacts = {
+            "ml_team": build_group_artifact_names("cat.sch", "ml_team"),
+            "data_eng": build_group_artifact_names("cat.sch", "data_eng"),
         }
 
-        results = alerter.create_alerts_by_group(views_by_group, "test_catalog")
+        results = alerter.create_alerts_by_group(group_artifacts, "test_catalog")
 
         assert "ml_team" in results
         assert "data_eng" in results

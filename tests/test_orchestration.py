@@ -8,6 +8,7 @@ import dpo
 from dpo.config import MonitoredTableConfig
 from dpo.coverage import CoverageReport
 from dpo.discovery import DiscoveredTable
+from dpo.naming import build_group_artifact_names
 from dpo.provisioning import ImpactReport, MonitorStatus, ProvisioningResult
 
 
@@ -64,6 +65,24 @@ class TestOrchestrationHelpers:
 
         assert table.full_name == "test_catalog.ml.predictions"
         assert table.tags == {}
+        assert table.priority == 99
+
+    def test_create_table_from_config_normalizes_invalid_priority(self):
+        """Malformed monitor_priority tags should fall back safely."""
+        w = MagicMock()
+
+        table_info = MagicMock()
+        table_info.columns = []
+        table_info.table_type = MagicMock(value="MANAGED")
+        w.tables.get.return_value = table_info
+
+        tag = MagicMock()
+        tag.tag_key = "monitor_priority"
+        tag.tag_value = "high"
+        w.entity_tag_assignments.list.return_value = [tag]
+
+        table = dpo._create_table_from_config(w, "test_catalog.ml.predictions")
+
         assert table.priority == 99
 
     def test_build_table_list_yaml_precedence(
@@ -191,11 +210,6 @@ class TestBulkOrchestration:
 
         w = MagicMock()
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: w)
-        coverage_report = CoverageReport(total_catalog_tables=4, total_monitored=3)
-        coverage_analyzer = MagicMock()
-        coverage_analyzer.analyze.return_value = coverage_report
-        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
-
         tables = [
             _discovered_table("test_catalog.sch.a"),
             _discovered_table("test_catalog.sch.b"),
@@ -234,7 +248,7 @@ class TestBulkOrchestration:
         assert report.monitors_failed == 1
         assert report.orphans_cleaned == 1
         assert report.monitor_statuses == wait_statuses
-        assert report.coverage_report == coverage_report
+        assert report.coverage_report is None
 
     def test_run_bulk_provisioning_skips_wait_without_healthy_tables(
         self, monkeypatch, sample_config
@@ -245,10 +259,6 @@ class TestBulkOrchestration:
         config.cleanup_orphans = False
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
-        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=0)
-        coverage_analyzer = MagicMock()
-        coverage_analyzer.analyze.return_value = coverage_report
-        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
         tables = [_discovered_table("test_catalog.sch.a")]
         monkeypatch.setattr(dpo, "_build_table_list", MagicMock(return_value=tables))
 
@@ -265,7 +275,7 @@ class TestBulkOrchestration:
 
         wait_for_monitors.assert_not_called()
         assert report.monitor_statuses == []
-        assert report.coverage_report == coverage_report
+        assert report.coverage_report is None
 
     def test_run_bulk_provisioning_uses_dry_run_results(
         self, monkeypatch, sample_config
@@ -275,10 +285,6 @@ class TestBulkOrchestration:
         config.wait_for_monitors = True
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
-        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=0)
-        coverage_analyzer = MagicMock()
-        coverage_analyzer.analyze.return_value = coverage_report
-        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
         tables = [_discovered_table("test_catalog.sch.a")]
         monkeypatch.setattr(dpo, "_build_table_list", MagicMock(return_value=tables))
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
@@ -297,12 +303,12 @@ class TestBulkOrchestration:
         provisioner.dry_run_all.assert_called_once_with(tables)
         provisioner.provision_all.assert_not_called()
         assert report.tables_discovered == 1
-        assert report.coverage_report == coverage_report
+        assert report.coverage_report is None
 
-    def test_run_bulk_provisioning_runs_coverage_after_mutations(
+    def test_run_bulk_provisioning_does_not_run_coverage(
         self, monkeypatch, sample_config
     ):
-        """Coverage should run after provisioning and orphan cleanup."""
+        """Bulk orchestration should not run coverage as part of the default path."""
         config = sample_config
         config.wait_for_monitors = False
         config.cleanup_orphans = True
@@ -325,35 +331,23 @@ class TestBulkOrchestration:
         )
         monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
 
-        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=1)
-        coverage_analyzer = MagicMock()
-        coverage_analyzer.analyze.side_effect = (
-            lambda _tables: events.append("coverage") or coverage_report
-        )
-        monkeypatch.setattr(
-            dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer)
-        )
-
         report = dpo.run_bulk_provisioning(config, dry_run=False)
 
-        assert events == ["provision", "cleanup", "coverage"]
-        assert report.coverage_report == coverage_report
+        assert events == ["provision", "cleanup"]
+        assert report.coverage_report is None
 
-    def test_run_bulk_provisioning_continues_when_coverage_fails(
+    def test_run_bulk_provisioning_ignores_coverage_analyzer(
         self, monkeypatch, sample_config
     ):
-        """Coverage analysis errors should not fail bulk provisioning."""
+        """Bulk orchestration should not construct coverage analysis at all."""
         config = sample_config
         config.wait_for_monitors = False
         config.cleanup_orphans = False
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
-        monkeypatch.setattr(
-            dpo,
-            "CoverageAnalyzer",
-            MagicMock(return_value=MagicMock(analyze=MagicMock(side_effect=RuntimeError("coverage boom")))),
-        )
+        coverage_cls = MagicMock()
+        monkeypatch.setattr(dpo, "CoverageAnalyzer", coverage_cls)
         tables = [_discovered_table("test_catalog.sch.a")]
         monkeypatch.setattr(dpo, "_build_table_list", MagicMock(return_value=tables))
         provisioner = MagicMock()
@@ -364,6 +358,7 @@ class TestBulkOrchestration:
 
         report = dpo.run_bulk_provisioning(config, dry_run=False)
 
+        coverage_cls.assert_not_called()
         assert report.coverage_report is None
         assert report.monitors_created == 1
 
@@ -400,10 +395,6 @@ class TestFullOrchestration:
         config.deploy_aggregated_dashboard = True
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
-        coverage_report = CoverageReport(total_catalog_tables=2, total_monitored=2)
-        coverage_analyzer = MagicMock()
-        coverage_analyzer.analyze.return_value = coverage_report
-        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
         verify_output = MagicMock()
         verify_view = MagicMock()
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", verify_output)
@@ -426,12 +417,12 @@ class TestFullOrchestration:
         wait_statuses = [MonitorStatus("test_catalog.sch.a", "ACTIVE")]
         monkeypatch.setattr(dpo, "wait_for_monitors", MagicMock(return_value=wait_statuses))
 
-        views_by_group = {
-            "ML Team": ("test_catalog.global_monitoring.unified_drift_metrics_ml_team", "test_catalog.global_monitoring.unified_profile_metrics_ml_team"),
-            "default": ("test_catalog.global_monitoring.unified_drift_metrics_default", "test_catalog.global_monitoring.unified_profile_metrics_default"),
+        group_artifacts = {
+            "ML Team": build_group_artifact_names("test_catalog.global_monitoring", "ML Team"),
+            "default": build_group_artifact_names("test_catalog.global_monitoring", "default"),
         }
         aggregator = MagicMock()
-        aggregator.create_unified_views_by_group.return_value = views_by_group
+        aggregator.create_group_views.return_value = group_artifacts
         monkeypatch.setattr(dpo, "MetricsAggregator", MagicMock(return_value=aggregator))
 
         alerts_by_group = {
@@ -456,26 +447,23 @@ class TestFullOrchestration:
 
         verify_output.assert_called_once()
         verify_view.assert_called_once()
-        aggregator.create_unified_views_by_group.assert_called_once()
+        aggregator.create_group_views.assert_called_once()
         aggregator.cleanup_stale_views.assert_called_once_with(
             "test_catalog.global_monitoring", {"ml_team", "default"}
         )
         alerter.create_alerts_by_group.assert_called_once_with(
-            views_by_group, "test_catalog"
+            group_artifacts, "test_catalog"
         )
         dashboard_provisioner.cleanup_stale_dashboards.assert_called_once_with(
             config.dashboard_parent_path, {"ML Team", "default"}
         )
         dashboard_provisioner.deploy_dashboards_by_group.assert_called_once_with(
-            views_by_group,
+            group_artifacts,
             config.dashboard_parent_path,
-            unified_performance_view="test_catalog.global_monitoring.unified_performance_metrics",
-            coverage_report=coverage_report,
         )
         dashboard_provisioner.deploy_executive_rollup.assert_called_once_with(
-            views_by_group,
+            group_artifacts,
             config.dashboard_parent_path,
-            coverage_report=coverage_report,
         )
         assert report.unified_drift_views["ML Team"].endswith("_ml_team")
         assert report.drift_alert_ids == {"ML Team": "drift_ml"}
@@ -483,7 +471,7 @@ class TestFullOrchestration:
         assert report.dashboard_ids == dashboards_by_group
         assert report.rollup_dashboard_id == "rollup_123"
         assert report.monitor_statuses == wait_statuses
-        assert report.coverage_report == coverage_report
+        assert report.coverage_report is None
 
     def test_run_orchestration_dry_run_skips_downstream(self, monkeypatch, sample_config):
         """Dry run in full mode should skip aggregation, alerting, and dashboard deployment."""
@@ -492,10 +480,6 @@ class TestFullOrchestration:
         config.wait_for_monitors = True
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
-        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=0)
-        coverage_analyzer = MagicMock()
-        coverage_analyzer.analyze.return_value = coverage_report
-        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
         monkeypatch.setattr(dpo, "verify_view_permissions", MagicMock())
 
@@ -523,12 +507,12 @@ class TestFullOrchestration:
 
         report = dpo.run_orchestration(config, dry_run=True)
 
-        aggregator.create_unified_views_by_group.assert_not_called()
+        aggregator.create_group_views.assert_not_called()
         alerter.create_alerts_by_group.assert_not_called()
         dashboard_provisioner.deploy_dashboards_by_group.assert_not_called()
         assert report.unified_drift_views == {}
         assert report.dashboard_ids == {}
-        assert report.coverage_report == coverage_report
+        assert report.coverage_report is None
 
     def test_run_orchestration_logs_skip_when_no_healthy_tables(
         self, monkeypatch, sample_config
@@ -541,10 +525,6 @@ class TestFullOrchestration:
         config.deploy_aggregated_dashboard = True
 
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
-        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=0)
-        coverage_analyzer = MagicMock()
-        coverage_analyzer.analyze.return_value = coverage_report
-        monkeypatch.setattr(dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer))
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
         monkeypatch.setattr(dpo, "verify_view_permissions", MagicMock())
 
@@ -573,19 +553,19 @@ class TestFullOrchestration:
         report = dpo.run_orchestration(config, dry_run=False)
 
         wait_for_monitors.assert_not_called()
-        aggregator.create_unified_views_by_group.assert_not_called()
+        aggregator.create_group_views.assert_not_called()
         # With empty views_by_group, alerting and dashboards are skipped
         # to prevent destructive cleanup on transient failures
         alerter.create_alerts_by_group.assert_not_called()
         dashboard_provisioner.deploy_dashboards_by_group.assert_not_called()
         dashboard_provisioner.cleanup_stale_dashboards.assert_not_called()
         assert report.unified_drift_views == {}
-        assert report.coverage_report == coverage_report
+        assert report.coverage_report is None
 
-    def test_run_orchestration_runs_coverage_after_mutations(
+    def test_run_orchestration_does_not_run_coverage(
         self, monkeypatch, sample_config
     ):
-        """Full mode should run coverage after provisioning and orphan cleanup."""
+        """Full orchestration should not run coverage as part of the default path."""
         config = sample_config
         config.mode = "full"
         config.wait_for_monitors = False
@@ -612,27 +592,18 @@ class TestFullOrchestration:
         )
         monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
 
-        coverage_report = CoverageReport(total_catalog_tables=1, total_monitored=1)
-        coverage_analyzer = MagicMock()
-        coverage_analyzer.analyze.side_effect = (
-            lambda _tables: events.append("coverage") or coverage_report
-        )
-        monkeypatch.setattr(
-            dpo, "CoverageAnalyzer", MagicMock(return_value=coverage_analyzer)
-        )
-
         aggregator = MagicMock()
         monkeypatch.setattr(dpo, "MetricsAggregator", MagicMock(return_value=aggregator))
 
         report = dpo.run_orchestration(config, dry_run=False)
 
-        assert events == ["provision", "cleanup", "coverage"]
-        assert report.coverage_report == coverage_report
+        assert events == ["provision", "cleanup"]
+        assert report.coverage_report is None
 
-    def test_run_orchestration_continues_when_coverage_fails(
+    def test_run_orchestration_ignores_coverage_analyzer(
         self, monkeypatch, sample_config
     ):
-        """Coverage analysis errors should not fail full orchestration."""
+        """Full orchestration should not construct coverage analysis at all."""
         config = sample_config
         config.mode = "full"
         config.wait_for_monitors = False
@@ -643,11 +614,8 @@ class TestFullOrchestration:
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
         monkeypatch.setattr(dpo, "verify_view_permissions", MagicMock())
-        monkeypatch.setattr(
-            dpo,
-            "CoverageAnalyzer",
-            MagicMock(return_value=MagicMock(analyze=MagicMock(side_effect=RuntimeError("coverage boom")))),
-        )
+        coverage_cls = MagicMock()
+        monkeypatch.setattr(dpo, "CoverageAnalyzer", coverage_cls)
         monkeypatch.setattr(
             dpo, "MetricsAggregator", MagicMock(return_value=MagicMock())
         )
@@ -661,6 +629,7 @@ class TestFullOrchestration:
 
         report = dpo.run_orchestration(config, dry_run=False)
 
+        coverage_cls.assert_not_called()
         assert report.coverage_report is None
         assert report.monitors_created == 1
 
@@ -678,12 +647,6 @@ class TestFullOrchestration:
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
         monkeypatch.setattr(dpo, "verify_view_permissions", MagicMock())
-        monkeypatch.setattr(
-            dpo,
-            "CoverageAnalyzer",
-            MagicMock(return_value=MagicMock(analyze=MagicMock(return_value=CoverageReport()))),
-        )
-
         tables = [_discovered_table("test_catalog.sch.a", group="default")]
         monkeypatch.setattr(dpo, "_build_table_list", MagicMock(return_value=tables))
 
@@ -693,14 +656,15 @@ class TestFullOrchestration:
         ]
         monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
 
-        aggregator = MagicMock()
-        aggregator.create_unified_views_by_group.return_value = {
-            "default": (
-                "test_catalog.global_monitoring.unified_drift_metrics_default",
-                "test_catalog.global_monitoring.unified_profile_metrics_default",
-            )
+        group_artifacts = {
+            "default": build_group_artifact_names("test_catalog.global_monitoring", "default"),
         }
-        aggregator.create_unified_performance_view.side_effect = RuntimeError("perf view failed")
+        aggregator = MagicMock()
+        group_artifacts["default"] = build_group_artifact_names("test_catalog.global_monitoring", "default")
+        from dataclasses import replace
+        aggregator.create_group_views.return_value = {
+            "default": replace(group_artifacts["default"], performance_view=None)
+        }
         monkeypatch.setattr(dpo, "MetricsAggregator", MagicMock(return_value=aggregator))
 
         dashboard_provisioner = MagicMock()
@@ -714,15 +678,8 @@ class TestFullOrchestration:
         report = dpo.run_orchestration(config, dry_run=False)
 
         dashboard_provisioner.deploy_dashboards_by_group.assert_called_once_with(
-            {
-                "default": (
-                    "test_catalog.global_monitoring.unified_drift_metrics_default",
-                    "test_catalog.global_monitoring.unified_profile_metrics_default",
-                )
-            },
+            {"default": replace(group_artifacts["default"], performance_view=None)},
             config.dashboard_parent_path,
-            unified_performance_view=None,
-            coverage_report=report.coverage_report,
         )
 
     def test_run_orchestration_continues_when_rollup_fails(
@@ -740,11 +697,6 @@ class TestFullOrchestration:
         monkeypatch.setattr(sdk, "WorkspaceClient", lambda: MagicMock())
         monkeypatch.setattr(dpo, "verify_output_schema_permissions", MagicMock())
         monkeypatch.setattr(dpo, "verify_view_permissions", MagicMock())
-        monkeypatch.setattr(
-            dpo,
-            "CoverageAnalyzer",
-            MagicMock(return_value=MagicMock(analyze=MagicMock(return_value=CoverageReport()))),
-        )
         tables = [
             _discovered_table("test_catalog.sch.a", group="ml"),
             _discovered_table("test_catalog.sch.b", group="default"),
@@ -758,15 +710,9 @@ class TestFullOrchestration:
         monkeypatch.setattr(dpo, "ProfileProvisioner", MagicMock(return_value=provisioner))
 
         aggregator = MagicMock()
-        aggregator.create_unified_views_by_group.return_value = {
-            "ml": (
-                "test_catalog.global_monitoring.unified_drift_metrics_ml",
-                "test_catalog.global_monitoring.unified_profile_metrics_ml",
-            ),
-            "default": (
-                "test_catalog.global_monitoring.unified_drift_metrics_default",
-                "test_catalog.global_monitoring.unified_profile_metrics_default",
-            ),
+        aggregator.create_group_views.return_value = {
+            "ml": build_group_artifact_names("test_catalog.global_monitoring", "ml"),
+            "default": build_group_artifact_names("test_catalog.global_monitoring", "default"),
         }
         monkeypatch.setattr(dpo, "MetricsAggregator", MagicMock(return_value=aggregator))
 

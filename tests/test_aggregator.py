@@ -6,6 +6,7 @@ import pytest
 
 from dpo.aggregator import MetricsAggregator
 from dpo.discovery import DiscoveredTable
+from dpo.planning import build_execution_plan
 
 
 class TestMetricsAggregator:
@@ -328,20 +329,17 @@ class TestSchemaCreation:
         mock_workspace_client.schemas.create.assert_called_once()
 
 
-class TestUnifiedViewsByGroup:
+class TestGroupViews:
     """Tests for per-group unified view creation."""
 
-    def test_create_unified_views_by_group(
+    def test_create_group_views(
         self, mock_workspace_client, sample_config, sample_grouped_tables
     ):
         """Test views are created per group."""
         aggregator = MetricsAggregator(mock_workspace_client, sample_config)
+        groups = build_execution_plan(sample_config, sample_grouped_tables).groups
 
-        results = aggregator.create_unified_views_by_group(
-            sample_grouped_tables,
-            "test_catalog.global_monitoring",
-            "monitor_group",
-        )
+        results = aggregator.create_group_views(groups)
 
         # Should have 3 groups: ml_team, data_eng, default
         assert len(results) == 3
@@ -350,11 +348,12 @@ class TestUnifiedViewsByGroup:
         assert "default" in results
 
         # Check view names
-        ml_drift, ml_profile = results["ml_team"]
-        assert "unified_drift_metrics_ml_team" in ml_drift
-        assert "unified_profile_metrics_ml_team" in ml_profile
+        ml_artifacts = results["ml_team"]
+        assert "unified_drift_metrics_ml_team" in ml_artifacts.drift_view
+        assert "unified_profile_metrics_ml_team" in ml_artifacts.profile_view
+        assert "unified_performance_metrics_ml_team" in (ml_artifacts.performance_view or "")
 
-    def test_create_unified_views_sanitizes_names(
+    def test_create_group_views_sanitizes_names(
         self, mock_workspace_client, sample_config
     ):
         """Test group names are sanitized for SQL."""
@@ -366,17 +365,14 @@ class TestUnifiedViewsByGroup:
         ]
 
         aggregator = MetricsAggregator(mock_workspace_client, sample_config)
+        groups = build_execution_plan(sample_config, tables).groups
 
-        results = aggregator.create_unified_views_by_group(
-            tables,
-            "test_catalog.global_monitoring",
-            "monitor_group",
-        )
+        results = aggregator.create_group_views(groups)
 
         # Group name should be sanitized
         assert "Marketing & Sales" in results
-        drift_view, _ = results["Marketing & Sales"]
-        assert "marketing_sales" in drift_view
+        artifacts = results["Marketing & Sales"]
+        assert "marketing_sales" in artifacts.drift_view
 
 
 class TestCleanupStaleViews:

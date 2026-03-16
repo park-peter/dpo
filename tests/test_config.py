@@ -85,6 +85,27 @@ profile_defaults:
 
         assert config.catalog_name is not None
 
+    def test_duplicate_leaf_names_raise_validation_error(self, tmp_path):
+        """Two configured tables with the same leaf name should be rejected."""
+        config_content = """
+catalog_name: "prod"
+warehouse_id: "test_warehouse"
+include_tagged_tables: false
+monitored_tables:
+  prod.sales.events: {}
+  prod.marketing.events: {}
+profile_defaults:
+  profile_type: "INFERENCE"
+  output_schema_name: "monitoring"
+  prediction_column: "pred"
+  timestamp_column: "ts"
+"""
+        config_file = tmp_path / "duplicate_leafs.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ValidationError, match="Duplicate table leaf names are not allowed"):
+            load_config(str(config_file))
+
 
 class TestDiscoveryConfig:
     """Tests for DiscoveryConfig validation."""
