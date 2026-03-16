@@ -12,6 +12,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.catalog import ColumnInfo, TableType
 
 from dpo.config import DiscoveryConfig
+from dpo.naming import normalize_monitor_priority
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +279,7 @@ class TableDiscovery:
             has_primary_key=self._has_primary_key(columns),
             columns=columns,
             table_type=table_info.table_type.value if table_info.table_type else "UNKNOWN",
-            priority=int(tags.get("monitor_priority", "99")),
+            priority=normalize_monitor_priority(tags.get("monitor_priority")),
         )
 
     def _has_primary_key(self, columns: List[ColumnInfo]) -> bool:

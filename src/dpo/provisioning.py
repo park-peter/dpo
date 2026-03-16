@@ -33,6 +33,7 @@ from tenacity import (
 
 from dpo.config import OrchestratorConfig
 from dpo.discovery import DiscoveredTable
+from dpo.naming import full_name_slug
 from dpo.utils import calculate_config_diff, hash_config
 
 logger = logging.getLogger(__name__)
@@ -571,7 +572,8 @@ class ProfileProvisioner:
             ]
 
         assets_dir = (
-            f"/Workspace/Users/{self.username}/dpo_monitoring/{table.table_name}"
+            f"/Workspace/Users/{self.username}/dpo_monitoring/"
+            f"{full_name_slug(table.full_name)}"
         )
         skip_builtin_dashboard = not self.config.profile_defaults.create_builtin_dashboard
 

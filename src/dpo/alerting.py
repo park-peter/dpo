@@ -23,6 +23,7 @@ from databricks.sdk.service.sql import (
 )
 
 from dpo.config import OrchestratorConfig
+from dpo.naming import GroupArtifactNames
 
 logger = logging.getLogger(__name__)
 
@@ -139,30 +140,30 @@ class AlertProvisioner:
 
     def create_alerts_by_group(
         self,
-        views_by_group: Dict[str, Tuple[str, str]],
+        group_artifacts: Dict[str, GroupArtifactNames],
         catalog: str,
     ) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
         """Create drift and quality alerts for each monitor group with per-group routing.
 
         Args:
-            views_by_group: Dict mapping group_name -> (drift_view, profile_view).
+            group_artifacts: Dict mapping group_name -> resolved artifact names.
             catalog: Catalog name for alert naming.
 
         Returns:
             Dict mapping group_name -> (drift_alert_id, quality_alert_id)
         """
         results = {}
-        for group_name, (drift_view, profile_view) in views_by_group.items():
+        for group_name, artifacts in group_artifacts.items():
             notifications = self._get_notifications_for_group(group_name)
 
             drift_alert_id = self.create_unified_drift_alert(
-                drift_view,
+                artifacts.drift_view,
                 catalog,
                 alert_suffix=f" - {group_name}",
                 notifications=notifications,
             )
             quality_alert_id = self.create_data_quality_alert(
-                profile_view,
+                artifacts.profile_view,
                 catalog,
                 alert_suffix=f" - {group_name}",
                 notifications=notifications,
@@ -280,7 +281,11 @@ class AlertProvisioner:
         row_min = self.config.alerting.row_count_min
         distinct_min = self.config.alerting.distinct_count_min
 
-        if not any([null_threshold, row_min, distinct_min]):
+        if (
+            null_threshold is None
+            and row_min is None
+            and distinct_min is None
+        ):
             logger.info(
                 "No data quality thresholds configured, skipping alert creation"
             )
@@ -308,9 +313,9 @@ class AlertProvisioner:
             distinct_count,
             CAST(1 AS DOUBLE) as trigger_value,
             CASE
-                WHEN null_rate > {null_threshold or 1.0} THEN 'HIGH_NULL_RATE'
-                WHEN record_count < {row_min or 0} THEN 'LOW_ROW_COUNT'
-                WHEN distinct_count < {distinct_min or 0} THEN 'LOW_CARDINALITY'
+                WHEN null_rate > {null_threshold if null_threshold is not None else 1.0} THEN 'HIGH_NULL_RATE'
+                WHEN record_count < {row_min if row_min is not None else 0} THEN 'LOW_ROW_COUNT'
+                WHEN distinct_count < {distinct_min if distinct_min is not None else 0} THEN 'LOW_CARDINALITY'
             END as issue_type,
             runbook_url,
             lineage_url,

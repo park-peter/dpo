@@ -7,6 +7,8 @@ from typing import Dict, List, Literal, Optional
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from dpo.naming import table_leaf_name
+
 logger = logging.getLogger(__name__)
 
 ALLOWED_GRANULARITIES = {
@@ -489,6 +491,23 @@ class OrchestratorConfig(BaseModel):
                     f"Table '{table_name}' catalog '{parts[0]}' does not match "
                     f"config catalog_name '{self.catalog_name}'"
                 )
+
+        leaf_name_map: Dict[str, List[str]] = {}
+        for table_name in self.monitored_tables.keys():
+            leaf_name_map.setdefault(table_leaf_name(table_name), []).append(table_name)
+
+        duplicate_leaf_names = {
+            leaf: names for leaf, names in leaf_name_map.items() if len(names) > 1
+        }
+        if duplicate_leaf_names:
+            details = ", ".join(
+                f"{leaf}: {sorted(names)}"
+                for leaf, names in sorted(duplicate_leaf_names.items())
+            )
+            raise ValueError(
+                "Duplicate table leaf names are not allowed because Databricks "
+                f"monitor artifacts collide: {details}"
+            )
 
         # --- Objective function cross-reference checks ---
         tables_with_objectives = {
