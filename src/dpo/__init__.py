@@ -14,6 +14,8 @@ from dpo.config import OrchestratorConfig, load_config
 from dpo.coverage import CoverageAnalyzer, CoverageReport
 from dpo.dashboard import DashboardProvisioner
 from dpo.discovery import DiscoveredTable, TableDiscovery
+from dpo.naming import normalize_monitor_priority
+from dpo.planning import build_execution_plan
 from dpo.provisioning import (
     ImpactReport,
     MonitorStatus,
@@ -134,7 +136,7 @@ def _create_table_from_config(w, table_name: str) -> DiscoveredTable:
         has_primary_key=False,
         columns=table_info.columns or [],
         table_type=table_info.table_type.value if table_info.table_type else "UNKNOWN",
-        priority=int(tags.get("monitor_priority", "99")),
+        priority=normalize_monitor_priority(tags.get("monitor_priority")),
     )
 
 
@@ -205,6 +207,7 @@ def run_bulk_provisioning(
     )
 
     tables = _build_table_list(w, config)
+    build_execution_plan(config, tables)
     provisioner = ProfileProvisioner(w, config)
     impact_report = None
     if dry_run:
@@ -229,12 +232,6 @@ def run_bulk_provisioning(
     if config.cleanup_orphans and not dry_run:
         orphans = provisioner.cleanup_orphans(tables)
 
-    coverage_report = None
-    try:
-        coverage_report = CoverageAnalyzer(w, config).analyze(tables)
-    except Exception as e:
-        logger.warning("Coverage analysis failed (continuing): %s", e)
-
     return OrchestrationReport(
         tables_discovered=len(tables),
         monitors_created=sum(1 for r in results if r.action == "created"),
@@ -245,7 +242,6 @@ def run_bulk_provisioning(
         orphans_cleaned=len(orphans),
         monitor_statuses=monitor_statuses,
         impact_report=impact_report,
-        coverage_report=coverage_report,
     )
 
 
@@ -293,6 +289,7 @@ def run_orchestration(
 
     # 2. Build table list (handles discovery + monitored_tables + enrichment)
     tables = _build_table_list(w, config)
+    execution_plan = build_execution_plan(config, tables)
     # 3. Provisioning
     provisioner = ProfileProvisioner(w, config)
     impact_report = None
@@ -321,65 +318,48 @@ def run_orchestration(
     if config.cleanup_orphans and not dry_run:
         orphans = provisioner.cleanup_orphans(tables)
 
-    coverage_report = None
-    try:
-        coverage_report = CoverageAnalyzer(w, config).analyze(tables)
-    except Exception as e:
-        logger.warning("Coverage analysis failed (continuing): %s", e)
-
     # 6. Aggregation
     aggregator = MetricsAggregator(w, config)
-    views_by_group = {}
+    group_artifacts = {}
 
     if not dry_run and healthy_tables:
-        views_by_group = aggregator.create_unified_views_by_group(
-            healthy_tables,
-            output_schema,
-            config.monitor_group_tag,
+        active_table_names = {table.full_name for table in healthy_tables}
+        active_groups = execution_plan.groups_for_tables(active_table_names)
+        group_artifacts = aggregator.create_group_views(
+            active_groups,
         )
 
-        active_sanitized_groups = {
-            sanitize_sql_identifier(g) for g in views_by_group.keys()
-        }
-        aggregator.cleanup_stale_views(output_schema, active_sanitized_groups)
+        aggregator.cleanup_stale_views(
+            output_schema,
+            {group.slug for group in active_groups.values()},
+        )
 
     # 7. Alerting
     alerts_by_group = {}
-    if config.alerting.enable_aggregated_alerts and not dry_run and views_by_group:
+    if config.alerting.enable_aggregated_alerts and not dry_run and group_artifacts:
         alerter = AlertProvisioner(w, config)
-        alerts_by_group = alerter.create_alerts_by_group(views_by_group, catalog)
+        alerts_by_group = alerter.create_alerts_by_group(group_artifacts, catalog)
 
-    # 8. Performance views
-    perf_view: Optional[str] = None
-    if not dry_run and healthy_tables:
-        try:
-            perf_view = f"{output_schema}.unified_performance_metrics"
-            aggregator.create_unified_performance_view(healthy_tables, perf_view)
-        except Exception as e:
-            logger.warning("Performance view creation failed (continuing): %s", e)
-            perf_view = None
-
-    # 9. Dashboards
+    # 8. Dashboards
     dashboards_by_group = {}
     rollup_dashboard_id = None
-    if config.deploy_aggregated_dashboard and not dry_run and views_by_group:
+    if config.deploy_aggregated_dashboard and not dry_run and group_artifacts:
         dashboard_provisioner = DashboardProvisioner(w, config)
         dashboards_by_group = dashboard_provisioner.deploy_dashboards_by_group(
-            views_by_group,
+            group_artifacts,
             config.dashboard_parent_path,
-            unified_performance_view=perf_view,
-            coverage_report=coverage_report,
         )
-        active_group_names = set(views_by_group.keys())
+        active_group_names = set(group_artifacts.keys())
         dashboard_provisioner.cleanup_stale_dashboards(
             config.dashboard_parent_path, active_group_names
         )
 
         # Executive rollup
-        if config.deploy_executive_rollup and len(views_by_group) > 1:
+        if config.deploy_executive_rollup and len(group_artifacts) > 1:
             try:
                 rollup_dashboard_id = dashboard_provisioner.deploy_executive_rollup(
-                    views_by_group, config.dashboard_parent_path, coverage_report=coverage_report
+                    group_artifacts,
+                    config.dashboard_parent_path,
                 )
             except Exception as e:
                 logger.warning("Executive rollup dashboard failed (continuing): %s", e)
@@ -392,13 +372,12 @@ def run_orchestration(
         monitors_skipped=sum(1 for r in results if "skipped" in r.action),
         monitors_failed=sum(1 for r in results if r.action == "failed"),
         orphans_cleaned=len(orphans),
-        unified_drift_views={g: v[0] for g, v in views_by_group.items()},
-        unified_profile_views={g: v[1] for g, v in views_by_group.items()},
+        unified_drift_views={g: artifacts.drift_view for g, artifacts in group_artifacts.items()},
+        unified_profile_views={g: artifacts.profile_view for g, artifacts in group_artifacts.items()},
         drift_alert_ids={g: a[0] for g, a in alerts_by_group.items() if a[0]},
         quality_alert_ids={g: a[1] for g, a in alerts_by_group.items() if a[1]},
         dashboard_ids=dashboards_by_group,
         rollup_dashboard_id=rollup_dashboard_id,
         monitor_statuses=monitor_statuses,
         impact_report=impact_report,
-        coverage_report=coverage_report,
     )

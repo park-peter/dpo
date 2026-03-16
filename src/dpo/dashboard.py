@@ -14,6 +14,7 @@ from databricks.sdk.service.dashboards import Dashboard
 
 from dpo.config import OrchestratorConfig
 from dpo.coverage import CoverageReport
+from dpo.naming import GroupArtifactNames
 
 
 def _ensure_query_names(template: dict) -> dict:
@@ -53,6 +54,11 @@ def _sql_value(value: Optional[object]) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def _fallback_numeric(value: Optional[float | int], default: float | int) -> float | int:
+    """Return the configured numeric value, preserving zeros."""
+    return value if value is not None else default
 
 
 def _build_coverage_queries(coverage_report: Optional[CoverageReport]) -> Dict[str, str]:
@@ -409,8 +415,8 @@ def _build_dashboard_template(
                                     "datasetName": "unified_profile",
                                     "fields": [
                                         {"name": "tables_profiled", "expression": "COUNT(DISTINCT `source_table_name`)"},
-                                        {"name": "high_null_columns", "expression": f"COUNT(CASE WHEN `null_rate` > {null_rate_threshold or 1.0} THEN 1 END)"},
-                                        {"name": "low_row_tables", "expression": f"COUNT(DISTINCT CASE WHEN `record_count` < {row_count_min or 0} THEN `source_table_name` END)"},
+                                        {"name": "high_null_columns", "expression": f"COUNT(CASE WHEN `null_rate` > {_fallback_numeric(null_rate_threshold, 1.0)} THEN 1 END)"},
+                                        {"name": "low_row_tables", "expression": f"COUNT(DISTINCT CASE WHEN `record_count` < {_fallback_numeric(row_count_min, 0)} THEN `source_table_name` END)"},
                                     ],
                                     "disaggregated": False,
                                 }
@@ -1156,30 +1162,28 @@ class DashboardProvisioner:
 
     def deploy_dashboards_by_group(
         self,
-        views_by_group: Dict[str, Tuple[str, str]],
+        group_artifacts: Dict[str, GroupArtifactNames],
         parent_path: str,
-        unified_performance_view: Optional[str] = None,
         coverage_report: Optional[CoverageReport] = None,
     ) -> Dict[str, str]:
         """Deploy a dashboard for each monitor group.
 
         Args:
-            views_by_group: Dict mapping group_name -> (drift_view, profile_view).
+            group_artifacts: Dict mapping group_name -> resolved artifact names.
             parent_path: Workspace path for dashboards.
-            unified_performance_view: Full name of unified performance view.
             coverage_report: Optional coverage governance report snapshot.
 
         Returns:
             Dict mapping group_name -> dashboard_id.
         """
         results = {}
-        for group_name, (drift_view, profile_view) in views_by_group.items():
+        for group_name, artifacts in group_artifacts.items():
             dashboard_id = self.deploy_dashboard(
-                drift_view,
+                artifacts.drift_view,
                 parent_path,
-                unified_profile_view=profile_view,
-                unified_performance_view=unified_performance_view,
-                dashboard_name=f"DPO Health - {group_name}",
+                unified_profile_view=artifacts.profile_view,
+                unified_performance_view=artifacts.performance_view,
+                dashboard_name=artifacts.dashboard_name,
                 coverage_report=coverage_report,
             )
             results[group_name] = dashboard_id
@@ -1188,14 +1192,14 @@ class DashboardProvisioner:
 
     def deploy_executive_rollup(
         self,
-        views_by_group: Dict[str, Tuple[str, str]],
+        group_artifacts: Dict[str, GroupArtifactNames],
         parent_path: str,
         coverage_report: Optional[CoverageReport] = None,
     ) -> str:
         """Deploy a single cross-group executive rollup dashboard.
 
         Args:
-            views_by_group: Mapping of group name to (drift_view, profile_view) tuples.
+            group_artifacts: Mapping of group name to resolved artifact names.
             parent_path: Workspace path for the dashboard.
             coverage_report: Optional coverage data for summary counters.
 
@@ -1208,8 +1212,8 @@ class DashboardProvisioner:
 
         drift_union = " UNION ALL ".join(
             f"SELECT *, '{_sql_escape(group)}' as monitor_group "
-            f"FROM {views[0]}"
-            for group, views in views_by_group.items()
+            f"FROM {artifacts.drift_view}"
+            for group, artifacts in group_artifacts.items()
         )
 
         template = {

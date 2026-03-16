@@ -5,14 +5,15 @@ for centralized observability. Supports per-group aggregation.
 """
 
 import logging
-from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from dataclasses import replace
+from typing import Dict, List, Optional, Set
 
 from databricks.sdk import WorkspaceClient
 
 from dpo.config import OrchestratorConfig
 from dpo.discovery import DiscoveredTable
-from dpo.utils import sanitize_sql_identifier
+from dpo.naming import GroupArtifactNames
+from dpo.planning import PlannedGroup
 
 logger = logging.getLogger(__name__)
 
@@ -593,41 +594,40 @@ class MetricsAggregator:
         LIMIT 20
         """
 
-    def create_unified_views_by_group(
+    def create_group_views(
         self,
-        discovered_tables: List[DiscoveredTable],
-        output_schema: str,
-        group_tag: str = "monitor_group",
-    ) -> Dict[str, Tuple[str, str]]:
-        """Create unified drift and profile views for each monitor group.
+        groups: Dict[str, PlannedGroup],
+    ) -> Dict[str, GroupArtifactNames]:
+        """Create unified drift, profile, and performance views for each group."""
+        results: Dict[str, GroupArtifactNames] = {}
+        for group_name, group in groups.items():
+            tables = [planned.table for planned in group.tables]
+            artifacts = group.artifacts
 
-        Args:
-            discovered_tables: All discovered tables.
-            output_schema: Schema for unified views.
-            group_tag: Tag name used to group tables.
+            self.create_unified_drift_view(tables, artifacts.drift_view)
+            self.create_unified_profile_view(tables, artifacts.profile_view)
 
-        Returns:
-            Dict mapping group_name -> (drift_view_name, profile_view_name)
-        """
-        # Group tables by monitor_group tag
-        groups: Dict[str, List[DiscoveredTable]] = defaultdict(list)
-        for table in discovered_tables:
-            group_name = table.tags.get(group_tag, "default")
-            groups[group_name].append(table)
+            performance_view = artifacts.performance_view
+            if performance_view:
+                try:
+                    self.create_unified_performance_view(tables, performance_view)
+                except Exception as exc:
+                    logger.warning(
+                        "Performance view creation failed for group %s (continuing): %s",
+                        group_name,
+                        exc,
+                    )
+                    performance_view = None
 
-        results = {}
-        for group_name, tables in groups.items():
-            # Use sanitize_sql_identifier to handle special characters
-            safe_name = sanitize_sql_identifier(group_name)
-
-            drift_view = f"{output_schema}.unified_drift_metrics_{safe_name}"
-            profile_view = f"{output_schema}.unified_profile_metrics_{safe_name}"
-
-            self.create_unified_drift_view(tables, drift_view)
-            self.create_unified_profile_view(tables, profile_view)
-
-            results[group_name] = (drift_view, profile_view)
-            logger.info(f"Created unified views for group '{group_name}': {drift_view}, {profile_view}")
+            resolved = replace(artifacts, performance_view=performance_view)
+            results[group_name] = resolved
+            logger.info(
+                "Created unified views for group '%s': %s, %s, %s",
+                group_name,
+                resolved.drift_view,
+                resolved.profile_view,
+                resolved.performance_view,
+            )
 
         return results
 
@@ -672,7 +672,11 @@ class MetricsAggregator:
                 view_name = row[0]
 
                 # Check if it's a unified view we manage
-                for prefix in ["unified_drift_metrics_", "unified_profile_metrics_"]:
+                for prefix in [
+                    "unified_drift_metrics_",
+                    "unified_profile_metrics_",
+                    "unified_performance_metrics_",
+                ]:
                     if view_name.startswith(prefix):
                         group_suffix = view_name[len(prefix) :]
 
