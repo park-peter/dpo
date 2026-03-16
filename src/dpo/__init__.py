@@ -90,8 +90,6 @@ class OrchestrationReport:
     monitor_statuses: List[MonitorStatus] = field(default_factory=list)
     # Dry-run structured report
     impact_report: Optional[ImpactReport] = None
-    # Coverage report
-    coverage_report: Optional[CoverageReport] = None
 
     def to_dict(self) -> dict:
         """Serialize report for JSON output."""
@@ -112,8 +110,6 @@ class OrchestrationReport:
         }
         if self.impact_report:
             data["impact"] = self.impact_report.to_dict()
-        if self.coverage_report:
-            data["coverage"] = self.coverage_report.to_dict()
         return data
 
 

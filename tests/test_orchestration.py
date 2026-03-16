@@ -6,7 +6,6 @@ import databricks.sdk as sdk
 
 import dpo
 from dpo.config import MonitoredTableConfig
-from dpo.coverage import CoverageReport
 from dpo.discovery import DiscoveredTable
 from dpo.naming import build_group_artifact_names
 from dpo.provisioning import ImpactReport, MonitorStatus, ProvisioningResult
@@ -168,11 +167,10 @@ class TestOrchestrationHelpers:
 class TestOrchestrationReportModel:
     """Tests for OrchestrationReport serialization behavior."""
 
-    def test_to_dict_includes_optional_impact_and_coverage(self):
-        """to_dict should include serialized impact and coverage when present."""
+    def test_to_dict_includes_optional_impact_without_coverage_payload(self):
+        """to_dict should include impact details but omit separate coverage workflow output."""
         impact = ImpactReport()
         impact.add("cat.sch.tbl", "create", "")
-        coverage = CoverageReport(total_catalog_tables=2, total_monitored=1)
         report = dpo.OrchestrationReport(
             tables_discovered=1,
             monitors_created=1,
@@ -188,7 +186,6 @@ class TestOrchestrationReportModel:
             dashboard_ids={"default": "dash_1"},
             rollup_dashboard_id="rollup_1",
             impact_report=impact,
-            coverage_report=coverage,
         )
 
         data = report.to_dict()
@@ -196,7 +193,7 @@ class TestOrchestrationReportModel:
         assert data["tables_discovered"] == 1
         assert data["rollup_dashboard_id"] == "rollup_1"
         assert "impact" in data
-        assert "coverage" in data
+        assert "coverage" not in data
 
 
 class TestBulkOrchestration:
@@ -248,7 +245,6 @@ class TestBulkOrchestration:
         assert report.monitors_failed == 1
         assert report.orphans_cleaned == 1
         assert report.monitor_statuses == wait_statuses
-        assert report.coverage_report is None
 
     def test_run_bulk_provisioning_skips_wait_without_healthy_tables(
         self, monkeypatch, sample_config
@@ -275,7 +271,6 @@ class TestBulkOrchestration:
 
         wait_for_monitors.assert_not_called()
         assert report.monitor_statuses == []
-        assert report.coverage_report is None
 
     def test_run_bulk_provisioning_uses_dry_run_results(
         self, monkeypatch, sample_config
@@ -303,7 +298,6 @@ class TestBulkOrchestration:
         provisioner.dry_run_all.assert_called_once_with(tables)
         provisioner.provision_all.assert_not_called()
         assert report.tables_discovered == 1
-        assert report.coverage_report is None
 
     def test_run_bulk_provisioning_does_not_run_coverage(
         self, monkeypatch, sample_config
@@ -334,7 +328,6 @@ class TestBulkOrchestration:
         report = dpo.run_bulk_provisioning(config, dry_run=False)
 
         assert events == ["provision", "cleanup"]
-        assert report.coverage_report is None
 
     def test_run_bulk_provisioning_ignores_coverage_analyzer(
         self, monkeypatch, sample_config
@@ -359,7 +352,6 @@ class TestBulkOrchestration:
         report = dpo.run_bulk_provisioning(config, dry_run=False)
 
         coverage_cls.assert_not_called()
-        assert report.coverage_report is None
         assert report.monitors_created == 1
 
 
@@ -471,7 +463,6 @@ class TestFullOrchestration:
         assert report.dashboard_ids == dashboards_by_group
         assert report.rollup_dashboard_id == "rollup_123"
         assert report.monitor_statuses == wait_statuses
-        assert report.coverage_report is None
 
     def test_run_orchestration_dry_run_skips_downstream(self, monkeypatch, sample_config):
         """Dry run in full mode should skip aggregation, alerting, and dashboard deployment."""
@@ -512,7 +503,6 @@ class TestFullOrchestration:
         dashboard_provisioner.deploy_dashboards_by_group.assert_not_called()
         assert report.unified_drift_views == {}
         assert report.dashboard_ids == {}
-        assert report.coverage_report is None
 
     def test_run_orchestration_logs_skip_when_no_healthy_tables(
         self, monkeypatch, sample_config
@@ -560,7 +550,6 @@ class TestFullOrchestration:
         dashboard_provisioner.deploy_dashboards_by_group.assert_not_called()
         dashboard_provisioner.cleanup_stale_dashboards.assert_not_called()
         assert report.unified_drift_views == {}
-        assert report.coverage_report is None
 
     def test_run_orchestration_does_not_run_coverage(
         self, monkeypatch, sample_config
@@ -598,7 +587,6 @@ class TestFullOrchestration:
         report = dpo.run_orchestration(config, dry_run=False)
 
         assert events == ["provision", "cleanup"]
-        assert report.coverage_report is None
 
     def test_run_orchestration_ignores_coverage_analyzer(
         self, monkeypatch, sample_config
@@ -630,7 +618,6 @@ class TestFullOrchestration:
         report = dpo.run_orchestration(config, dry_run=False)
 
         coverage_cls.assert_not_called()
-        assert report.coverage_report is None
         assert report.monitors_created == 1
 
     def test_run_orchestration_handles_performance_view_failure(
