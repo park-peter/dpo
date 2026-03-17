@@ -321,7 +321,9 @@ def dry_run(ctx, config_path, output_format):
             "actions": report.impact_report.to_dict() if report.impact_report else {},
         }
         click.echo(json.dumps(result, indent=2, default=str))
-    # Table output is handled by ImpactReport.print_summary() during execution
+    else:
+        if report.impact_report:
+            report.impact_report.print_summary()
     sys.exit(EXIT_SUCCESS)
 
 

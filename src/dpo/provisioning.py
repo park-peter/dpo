@@ -396,7 +396,6 @@ class ProfileProvisioner:
                     success=True,
                 ))
 
-        report.print_summary()
         return results, report
 
     @retry(
