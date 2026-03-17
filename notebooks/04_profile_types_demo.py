@@ -70,7 +70,6 @@ config_snapshot = OrchestratorConfig(
         null_rate_threshold=0.01,  # Strict for reference data
         row_count_min=10000,  # Alert if dimension table shrinks
     ),
-    dry_run=True,
 )
 
 print("SNAPSHOT Profile Configuration:")
@@ -144,7 +143,6 @@ config_timeseries = OrchestratorConfig(
         drift_threshold=0.2,
         null_rate_threshold=0.1,
     ),
-    dry_run=True,
 )
 
 print("TIMESERIES Profile Configuration:")
@@ -231,7 +229,6 @@ config_inference = OrchestratorConfig(
         null_rate_threshold=0.1,
         row_count_min=1000,
     ),
-    dry_run=True,
 )
 
 print("INFERENCE Profile Configuration:")

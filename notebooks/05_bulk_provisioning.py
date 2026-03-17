@@ -71,7 +71,6 @@ config_config_driven = OrchestratorConfig(
     # These are ignored in bulk mode
     alerting=AlertConfig(enable_aggregated_alerts=False),
     deploy_aggregated_dashboard=False,
-    dry_run=True,  # Start with dry run to preview
 )
 
 print(f"Mode: {config_config_driven.mode}")
@@ -109,7 +108,6 @@ config_discovery = OrchestratorConfig(
 
     alerting=AlertConfig(enable_aggregated_alerts=False),
     deploy_aggregated_dashboard=False,
-    dry_run=True,
 )
 
 print(f"Mode: {config_discovery.mode}")
@@ -227,7 +225,6 @@ config_per_table = OrchestratorConfig(
         prediction_column="prediction",
         timestamp_column="timestamp",
     ),
-    dry_run=True,
 )
 
 print("Per-Table Settings:")
@@ -268,7 +265,6 @@ config_with_schema_filter = OrchestratorConfig(
         output_schema_name="monitoring_results",
         timestamp_column="timestamp",
     ),
-    dry_run=True,
 )
 
 print("Schema filter active:")

@@ -138,7 +138,6 @@ config = OrchestratorConfig(
     ),
     deploy_aggregated_dashboard=True,
     dashboard_parent_path="/Workspace/Shared/DPO",
-    dry_run=True,
 )
 
 print("Configuration:")
@@ -280,7 +279,6 @@ config_custom_tag = OrchestratorConfig(
         prediction_column="prediction",
         timestamp_column="timestamp",
     ),
-    dry_run=True,
 )
 
 print(f"Using custom group tag: {config_custom_tag.monitor_group_tag}")

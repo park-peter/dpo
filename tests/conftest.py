@@ -110,7 +110,6 @@ def sample_config() -> OrchestratorConfig:
             row_count_min=1000,
             default_notifications=["test@example.com"],
         ),
-        dry_run=False,
         cleanup_orphans=False,
         deploy_aggregated_dashboard=True,
         dashboard_parent_path="/Workspace/Shared/DPO",
