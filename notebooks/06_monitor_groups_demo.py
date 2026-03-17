@@ -12,7 +12,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-sdk>=0.77.0 pyyaml pydantic tenacity tabulate
+# MAGIC %pip install databricks-dpo
 
 # COMMAND ----------
 
@@ -115,6 +115,7 @@ config = OrchestratorConfig(
         granularity="1 day",
         prediction_column="prediction",
         label_column="label",
+        timestamp_column="timestamp",
     ),
     alerting=AlertConfig(
         enable_aggregated_alerts=True,
@@ -137,7 +138,6 @@ config = OrchestratorConfig(
     ),
     deploy_aggregated_dashboard=True,
     dashboard_parent_path="/Workspace/Shared/DPO",
-    dry_run=True,
 )
 
 print("Configuration:")
@@ -277,8 +277,8 @@ config_custom_tag = OrchestratorConfig(
         profile_type="INFERENCE",
         output_schema_name="monitoring_results",
         prediction_column="prediction",
+        timestamp_column="timestamp",
     ),
-    dry_run=True,
 )
 
 print(f"Using custom group tag: {config_custom_tag.monitor_group_tag}")

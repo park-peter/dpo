@@ -16,7 +16,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-sdk>=0.77.0 pyyaml pydantic tenacity tabulate
+# MAGIC %pip install databricks-dpo
 
 # COMMAND ----------
 
@@ -101,7 +101,6 @@ config_inference = OrchestratorConfig(
         row_count_min=1000,
         default_notifications=["mlops@company.com"],
     ),
-    dry_run=True,  # Start with dry run to preview changes
     cleanup_orphans=False,
     deploy_aggregated_dashboard=True,
     dashboard_parent_path="/Workspace/Shared/DPO",
@@ -145,7 +144,6 @@ config_discovery = OrchestratorConfig(
         enable_aggregated_alerts=True,
         drift_threshold=0.2,
     ),
-    dry_run=True,
 )
 
 print("\nTag-Based Discovery Configuration")
@@ -180,7 +178,6 @@ config_snapshot = OrchestratorConfig(
         null_rate_threshold=0.05,  # Stricter for static data
         row_count_min=10000,
     ),
-    dry_run=True,
 )
 
 print("\nSNAPSHOT Configuration")
@@ -217,7 +214,6 @@ config_timeseries = OrchestratorConfig(
         drift_threshold=0.2,
         null_rate_threshold=0.1,
     ),
-    dry_run=True,
 )
 
 print("\nTIMESERIES Configuration")

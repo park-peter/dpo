@@ -17,7 +17,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-sdk>=0.77.0 pyyaml pydantic tenacity tabulate
+# MAGIC %pip install databricks-dpo
 
 # COMMAND ----------
 
@@ -64,19 +64,19 @@ config_config_driven = OrchestratorConfig(
         granularity="1 day",
         prediction_column="prediction",
         label_column="label",
-        create_builtin_dashboard=False,  # Don't create per-monitor dashboards
+        timestamp_column="timestamp",
+        create_builtin_dashboard=False,
     ),
     
     # These are ignored in bulk mode
     alerting=AlertConfig(enable_aggregated_alerts=False),
     deploy_aggregated_dashboard=False,
-    dry_run=True,  # Start with dry run to preview
 )
 
 print(f"Mode: {config_config_driven.mode}")
 print(f"Catalog: {config_config_driven.catalog_name}")
 print(f"Tables: {list(config_config_driven.monitored_tables.keys())}")
-print(f"Dry run: {config_config_driven.dry_run}")
+print("Dry run: pass dry_run=True to run_orchestration() for preview")
 
 # COMMAND ----------
 
@@ -102,12 +102,12 @@ config_discovery = OrchestratorConfig(
         profile_type="INFERENCE",
         output_schema_name="monitoring_results",
         granularity="1 day",
+        timestamp_column="timestamp",
         create_builtin_dashboard=False,
     ),
-    
+
     alerting=AlertConfig(enable_aggregated_alerts=False),
     deploy_aggregated_dashboard=False,
-    dry_run=True,
 )
 
 print(f"Mode: {config_discovery.mode}")
@@ -223,8 +223,8 @@ config_per_table = OrchestratorConfig(
         output_schema_name="monitoring_results",
         granularity="1 day",
         prediction_column="prediction",
+        timestamp_column="timestamp",
     ),
-    dry_run=True,
 )
 
 print("Per-Table Settings:")
@@ -263,8 +263,8 @@ config_with_schema_filter = OrchestratorConfig(
     profile_defaults=ProfileConfig(
         profile_type="INFERENCE",
         output_schema_name="monitoring_results",
+        timestamp_column="timestamp",
     ),
-    dry_run=True,
 )
 
 print("Schema filter active:")

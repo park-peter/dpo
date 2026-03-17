@@ -321,7 +321,9 @@ def dry_run(ctx, config_path, output_format):
             "actions": report.impact_report.to_dict() if report.impact_report else {},
         }
         click.echo(json.dumps(result, indent=2, default=str))
-    # Table output is handled by ImpactReport.print_summary() during execution
+    else:
+        if report.impact_report:
+            report.impact_report.print_summary()
     sys.exit(EXIT_SUCCESS)
 
 
@@ -431,7 +433,13 @@ def coverage(ctx, config_path, output_format):
         click.echo(f"Monitored:         {report.total_monitored}")
         click.echo(f"Coverage:          {report.coverage_pct:.1f}%")
         click.echo(f"Unmonitored:       {len(report.unmonitored)}")
-        click.echo(f"Stale monitors:    {len(report.stale)}")
+        summary = report.to_dict()["summary"]
+        click.echo(f"Refresh attention: {summary['refresh_attention_count']}")
+        click.echo(f"Stale monitors:    {summary['stale_count']}")
+        click.echo(f"Never refreshed:   {summary['never_refreshed_count']}")
+        click.echo(
+            f"Refresh unknown:   {summary['refresh_history_unavailable_count']}"
+        )
         click.echo(f"Orphan monitors:   {len(report.orphans)}")
 
         if report.unmonitored:
@@ -443,10 +451,18 @@ def coverage(ctx, config_path, output_format):
             ))
 
         if report.stale:
-            click.echo("\nSTALE MONITORS:")
+            click.echo("\nMONITORS NEEDING REFRESH ATTENTION:")
             click.echo(tabulate(
-                [[s.table_name, s.days_since_refresh or "never", s.status] for s in report.stale[:20]],
-                headers=["Table", "Days Since Refresh", "Status"],
+                [
+                    [
+                        s.table_name,
+                        s.refresh_state,
+                        s.days_since_refresh if s.days_since_refresh is not None else "-",
+                        s.status,
+                    ]
+                    for s in report.stale[:20]
+                ],
+                headers=["Table", "State", "Days Since Refresh", "Status"],
                 tablefmt="simple",
             ))
 

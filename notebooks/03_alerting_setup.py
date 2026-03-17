@@ -15,7 +15,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-sdk>=0.77.0 pyyaml pydantic tenacity tabulate
+# MAGIC %pip install databricks-dpo
 
 # COMMAND ----------
 
@@ -57,6 +57,7 @@ config = OrchestratorConfig(
         output_schema_name="monitoring_results",
         prediction_column="prediction",
         label_column="label",
+        timestamp_column="timestamp",
     ),
     alerting=AlertConfig(
         enable_aggregated_alerts=True,

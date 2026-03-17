@@ -14,7 +14,7 @@ import fnmatch
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from databricks.sdk import WorkspaceClient
 
@@ -41,6 +41,7 @@ class StaleMonitor:
 
     table_name: str
     monitor_id: str
+    refresh_state: Literal["stale", "never_refreshed", "refresh_history_unavailable"] = "stale"
     last_refresh: Optional[datetime] = None
     days_since_refresh: Optional[int] = None
     status: str = "unknown"
@@ -69,6 +70,15 @@ class CoverageReport:
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict for JSON output."""
+        stale_count = sum(1 for s in self.stale if s.refresh_state == "stale")
+        never_refreshed_count = sum(
+            1 for s in self.stale if s.refresh_state == "never_refreshed"
+        )
+        refresh_history_unavailable_count = sum(
+            1
+            for s in self.stale
+            if s.refresh_state == "refresh_history_unavailable"
+        )
         return {
             "timestamp": self.timestamp,
             "summary": {
@@ -76,7 +86,10 @@ class CoverageReport:
                 "total_monitored": self.total_monitored,
                 "coverage_pct": round(self.coverage_pct, 2),
                 "unmonitored_count": len(self.unmonitored),
-                "stale_count": len(self.stale),
+                "refresh_attention_count": len(self.stale),
+                "stale_count": stale_count,
+                "never_refreshed_count": never_refreshed_count,
+                "refresh_history_unavailable_count": refresh_history_unavailable_count,
                 "orphan_count": len(self.orphans),
             },
             "unmonitored": sorted(
@@ -88,6 +101,7 @@ class CoverageReport:
                     {
                         "table": s.table_name,
                         "monitor_id": s.monitor_id,
+                        "refresh_state": s.refresh_state,
                         "last_refresh": s.last_refresh.isoformat() if s.last_refresh else None,
                         "days_since_refresh": s.days_since_refresh,
                         "status": s.status,
@@ -121,36 +135,22 @@ class CoverageAnalyzer:
         self._include_schemas = (config.discovery.include_schemas if config.discovery else None) or None
 
     def analyze(self, discovered_tables: List[DiscoveredTable]) -> CoverageReport:
-        """Run full coverage analysis.
-
-        Args:
-            discovered_tables: Tables that DPO is currently managing.
-
-        Returns:
-            CoverageReport with unmonitored, stale, and orphan data.
-        """
+        """Run full coverage analysis."""
         report = CoverageReport(timestamp=datetime.now(timezone.utc).isoformat())
 
-        # Gather all tables in the catalog
         catalog_tables = self._list_catalog_tables()
         report.total_catalog_tables = len(catalog_tables)
 
-        # Gather all existing monitors
-        monitored_table_ids, monitored_table_names_by_id = self._get_monitored_tables()
+        monitored_table_ids, monitored_table_names_by_id = self._get_monitored_tables(catalog_tables)
         monitored_table_names = set(monitored_table_names_by_id.values())
         report.total_monitored = len(monitored_table_names)
 
-        # Coverage percentage
         if catalog_tables:
             report.coverage_pct = (len(monitored_table_names) / len(catalog_tables)) * 100
 
-        # Unmonitored tables
         report.unmonitored = self._find_unmonitored(catalog_tables, monitored_table_names)
-
-        # Stale monitors
         report.stale = self._find_stale(monitored_table_ids, monitored_table_names_by_id)
 
-        # Orphan monitors (monitored but not in DPO config)
         config_table_names = self._get_config_table_names(discovered_tables)
         report.orphans = self._find_orphans(
             monitored_table_ids,
@@ -175,7 +175,7 @@ class CoverageAnalyzer:
         """List tables in the catalog, respecting discovery schema filters.
 
         Returns:
-            Dict mapping full_name -> {schema, owner tags}.
+            Dict mapping full_name -> {schema, table_id (when available)}.
         """
         tables: Dict[str, Dict[str, str]] = {}
 
@@ -190,7 +190,11 @@ class CoverageAnalyzer:
                     for table_summary in self.w.tables.list(
                         catalog_name=self.catalog, schema_name=schema.name
                     ):
-                        tables[table_summary.full_name] = {"schema": schema.name}
+                        entry: Dict[str, str] = {"schema": schema.name}
+                        table_id = getattr(table_summary, "table_id", None)
+                        if table_id:
+                            entry["table_id"] = table_id
+                        tables[table_summary.full_name] = entry
                 except Exception as e:
                     logger.debug("Failed to list tables in schema %s: %s", schema.name, e)
         except Exception as e:
@@ -198,20 +202,15 @@ class CoverageAnalyzer:
 
         return tables
 
-    def _get_monitored_table_ids(self) -> Dict[str, str]:
-        """Get monitor IDs scoped to the configured catalog.
-
-        Returns:
-            Dict mapping object_id -> monitor_id for in-catalog monitors only.
-        """
-        monitored_table_ids, _ = self._get_monitored_tables()
-        return monitored_table_ids
-
-    def _get_monitored_tables(self) -> Tuple[Dict[str, str], Dict[str, str]]:
+    def _get_monitored_tables(
+        self,
+        catalog_tables: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> Tuple[Dict[str, str], Dict[str, str]]:
         """Get monitors and resolved table names scoped to the configured catalog.
 
-        Resolves each monitor's object_id to a table name and filters
-        out monitors that belong to a different catalog.
+        Args:
+            catalog_tables: Pre-built catalog inventory from _list_catalog_tables().
+                Reused by the fallback path to avoid a second catalog enumeration.
 
         Returns:
             Tuple:
@@ -222,8 +221,6 @@ class CoverageAnalyzer:
         table_names_by_id: Dict[str, str] = {}
         catalog_prefix = f"{self.catalog}."
 
-        # Try list_monitor first (may be unimplemented in current API).
-        # Fall back to probing each catalog table individually via get_monitor.
         try:
             for monitor in self.w.data_quality.list_monitor():
                 obj_id = getattr(monitor, "object_id", None)
@@ -236,22 +233,27 @@ class CoverageAnalyzer:
                         table_names_by_id[obj_id] = info.full_name
                 except Exception:
                     logger.debug("Could not resolve table for monitor %s; skipping", obj_id)
+            logger.debug("Monitor discovery via list_monitor: %d monitors found", len(monitors))
             return monitors, table_names_by_id
         except Exception:
             logger.info(
-                "list_monitor unavailable; falling back to per-table get_monitor"
+                "list_monitor unavailable; falling back to cached catalog inventory"
             )
 
-        for table_name in self._list_catalog_tables():
+        inventory = catalog_tables if catalog_tables is not None else self._list_catalog_tables()
+        for table_name, meta in inventory.items():
+            table_id = meta.get("table_id")
             try:
-                info = self.w.tables.get(full_name=table_name)
-                if not info:
-                    continue
+                if not table_id:
+                    info = self.w.tables.get(full_name=table_name)
+                    if not info:
+                        continue
+                    table_id = info.table_id
                 monitor = self.w.data_quality.get_monitor(
-                    object_type="table", object_id=info.table_id
+                    object_type="table", object_id=table_id
                 )
-                monitors[info.table_id] = getattr(monitor, "monitor_id", info.table_id)
-                table_names_by_id[info.table_id] = table_name
+                monitors[table_id] = getattr(monitor, "monitor_id", table_id)
+                table_names_by_id[table_id] = table_name
             except Exception:
                 pass
 
@@ -317,7 +319,6 @@ class CoverageAnalyzer:
                     cfg = monitor.data_profiling_config
                     status = cfg.status.value if cfg.status else "unknown"
 
-                    # Check refreshes
                     try:
                         refreshes = list(self.w.data_quality.list_refresh(object_type="table", object_id=obj_id))
                         if refreshes:
@@ -338,12 +339,31 @@ class CoverageAnalyzer:
                 ):
                     continue
 
-                if last_refresh is None or last_refresh < cutoff:
-                    days = (datetime.now(timezone.utc) - last_refresh).days if last_refresh else None
+                if refresh_lookup_failed:
                     stale.append(
                         StaleMonitor(
                             table_name=table_name or obj_id,
                             monitor_id=monitor_id,
+                            refresh_state="refresh_history_unavailable",
+                            status=status,
+                        )
+                    )
+                elif last_refresh is None:
+                    stale.append(
+                        StaleMonitor(
+                            table_name=table_name or obj_id,
+                            monitor_id=monitor_id,
+                            refresh_state="never_refreshed",
+                            status=status,
+                        )
+                    )
+                elif last_refresh < cutoff:
+                    days = (datetime.now(timezone.utc) - last_refresh).days
+                    stale.append(
+                        StaleMonitor(
+                            table_name=table_name or obj_id,
+                            monitor_id=monitor_id,
+                            refresh_state="stale",
                             last_refresh=last_refresh,
                             days_since_refresh=days,
                             status=status,
