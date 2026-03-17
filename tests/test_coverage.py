@@ -290,36 +290,38 @@ class TestCoverageAnalyzer:
         analyzer = CoverageAnalyzer(mock_w, coverage_config)
         assert analyzer._list_catalog_tables() == {}
 
-    def test_get_monitored_table_ids_handles_list_error(self, mock_w, coverage_config):
+    def test_get_monitored_tables_handles_list_error(self, mock_w, coverage_config):
         """When list_monitor fails, fallback probes each table via get_monitor."""
         mock_w.data_quality.list_monitor.side_effect = RuntimeError("monitor list failed")
         mock_w.data_quality.get_monitor.side_effect = RuntimeError("no monitor")
         analyzer = CoverageAnalyzer(mock_w, coverage_config)
-        assert analyzer._get_monitored_table_ids() == {}
+        monitors, names = analyzer._get_monitored_tables(catalog_tables={})
+        assert monitors == {}
 
-    def test_get_monitored_table_ids_fallback_finds_monitors(self, mock_w, coverage_config):
-        """When list_monitor fails, fallback should find monitors via get_monitor."""
+    def test_get_monitored_tables_fallback_finds_monitors(self, mock_w, coverage_config):
+        """When list_monitor fails, fallback should find monitors via cached catalog inventory."""
         mock_w.data_quality.list_monitor.side_effect = RuntimeError("unimplemented")
-
-        schema = MagicMock()
-        schema.name = "ml"
-        mock_w.schemas.list.return_value = [schema]
-
-        table_info = MagicMock()
-        table_info.full_name = "test_catalog.ml.model_a"
-        table_info.table_id = "tid_1"
-        mock_w.tables.list.return_value = [table_info]
-        mock_w.tables.get.return_value = table_info
 
         monitor = MagicMock()
         monitor.monitor_id = "mon_1"
         mock_w.data_quality.get_monitor.return_value = monitor
 
-        analyzer = CoverageAnalyzer(mock_w, coverage_config)
-        result = analyzer._get_monitored_table_ids()
-        assert result == {"tid_1": "mon_1"}
+        table_info = MagicMock()
+        table_info.full_name = "test_catalog.ml.model_a"
+        table_info.table_id = "tid_1"
+        mock_w.tables.get.return_value = table_info
 
-    def test_get_monitored_table_ids_skips_invalid_monitor_entries(
+        catalog_tables = {
+            "test_catalog.ml.model_a": {"schema": "ml", "table_id": "tid_1"},
+        }
+
+        analyzer = CoverageAnalyzer(mock_w, coverage_config)
+        monitors, names = analyzer._get_monitored_tables(catalog_tables)
+        assert monitors == {"tid_1": "mon_1"}
+        assert names == {"tid_1": "test_catalog.ml.model_a"}
+        mock_w.tables.get.assert_not_called()
+
+    def test_get_monitored_tables_skips_invalid_monitor_entries(
         self, mock_w, coverage_config
     ):
         """Monitors missing object IDs or unresolvable table IDs are skipped."""
@@ -332,7 +334,8 @@ class TestCoverageAnalyzer:
         mock_w.tables.get.side_effect = RuntimeError("not found")
 
         analyzer = CoverageAnalyzer(mock_w, coverage_config)
-        assert analyzer._get_monitored_table_ids() == {}
+        monitors, names = analyzer._get_monitored_tables()
+        assert monitors == {}
 
     def test_resolve_table_names_ignores_lookup_errors(self, mock_w, coverage_config):
         """Name resolution should skip IDs that fail table lookup."""
