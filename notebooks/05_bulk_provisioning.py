@@ -64,7 +64,8 @@ config_config_driven = OrchestratorConfig(
         granularity="1 day",
         prediction_column="prediction",
         label_column="label",
-        create_builtin_dashboard=False,  # Don't create per-monitor dashboards
+        timestamp_column="timestamp",
+        create_builtin_dashboard=False,
     ),
     
     # These are ignored in bulk mode
@@ -102,9 +103,10 @@ config_discovery = OrchestratorConfig(
         profile_type="INFERENCE",
         output_schema_name="monitoring_results",
         granularity="1 day",
+        timestamp_column="timestamp",
         create_builtin_dashboard=False,
     ),
-    
+
     alerting=AlertConfig(enable_aggregated_alerts=False),
     deploy_aggregated_dashboard=False,
     dry_run=True,
@@ -223,6 +225,7 @@ config_per_table = OrchestratorConfig(
         output_schema_name="monitoring_results",
         granularity="1 day",
         prediction_column="prediction",
+        timestamp_column="timestamp",
     ),
     dry_run=True,
 )
@@ -263,6 +266,7 @@ config_with_schema_filter = OrchestratorConfig(
     profile_defaults=ProfileConfig(
         profile_type="INFERENCE",
         output_schema_name="monitoring_results",
+        timestamp_column="timestamp",
     ),
     dry_run=True,
 )

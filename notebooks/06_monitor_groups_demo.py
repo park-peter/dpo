@@ -115,6 +115,7 @@ config = OrchestratorConfig(
         granularity="1 day",
         prediction_column="prediction",
         label_column="label",
+        timestamp_column="timestamp",
     ),
     alerting=AlertConfig(
         enable_aggregated_alerts=True,
@@ -277,6 +278,7 @@ config_custom_tag = OrchestratorConfig(
         profile_type="INFERENCE",
         output_schema_name="monitoring_results",
         prediction_column="prediction",
+        timestamp_column="timestamp",
     ),
     dry_run=True,
 )

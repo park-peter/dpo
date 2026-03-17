@@ -57,6 +57,7 @@ config = OrchestratorConfig(
         output_schema_name="monitoring_results",
         prediction_column="prediction",
         label_column="label",
+        timestamp_column="timestamp",
     ),
     alerting=AlertConfig(
         enable_aggregated_alerts=True,
