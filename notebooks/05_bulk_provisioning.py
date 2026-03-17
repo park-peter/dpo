@@ -76,7 +76,7 @@ config_config_driven = OrchestratorConfig(
 print(f"Mode: {config_config_driven.mode}")
 print(f"Catalog: {config_config_driven.catalog_name}")
 print(f"Tables: {list(config_config_driven.monitored_tables.keys())}")
-print(f"Dry run: {config_config_driven.dry_run}")
+print("Dry run: pass dry_run=True to run_orchestration() for preview")
 
 # COMMAND ----------
 
