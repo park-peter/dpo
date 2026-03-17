@@ -70,6 +70,15 @@ class CoverageReport:
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict for JSON output."""
+        stale_count = sum(1 for s in self.stale if s.refresh_state == "stale")
+        never_refreshed_count = sum(
+            1 for s in self.stale if s.refresh_state == "never_refreshed"
+        )
+        refresh_history_unavailable_count = sum(
+            1
+            for s in self.stale
+            if s.refresh_state == "refresh_history_unavailable"
+        )
         return {
             "timestamp": self.timestamp,
             "summary": {
@@ -77,7 +86,10 @@ class CoverageReport:
                 "total_monitored": self.total_monitored,
                 "coverage_pct": round(self.coverage_pct, 2),
                 "unmonitored_count": len(self.unmonitored),
-                "stale_count": len(self.stale),
+                "refresh_attention_count": len(self.stale),
+                "stale_count": stale_count,
+                "never_refreshed_count": never_refreshed_count,
+                "refresh_history_unavailable_count": refresh_history_unavailable_count,
                 "orphan_count": len(self.orphans),
             },
             "unmonitored": sorted(

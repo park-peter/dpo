@@ -93,7 +93,12 @@ class TestCoverageReport:
                 UnmonitoredTable(full_name="cat.sch.t2", schema_name="sch"),
             ],
             stale=[
-                StaleMonitor(table_name="cat.sch.t3", monitor_id="m1", days_since_refresh=45),
+                StaleMonitor(
+                    table_name="cat.sch.t3",
+                    monitor_id="m1",
+                    refresh_state="stale",
+                    days_since_refresh=45,
+                ),
             ],
             orphans=[
                 OrphanMonitor(table_name="cat.sch.t4", monitor_id="m2"),
@@ -104,7 +109,40 @@ class TestCoverageReport:
         assert data["summary"]["coverage_pct"] == 70.0
         assert data["summary"]["unmonitored_count"] == 2
         assert data["summary"]["stale_count"] == 1
+        assert data["summary"]["refresh_attention_count"] == 1
+        assert data["summary"]["never_refreshed_count"] == 0
+        assert data["summary"]["refresh_history_unavailable_count"] == 0
         assert data["summary"]["orphan_count"] == 1
+
+    def test_report_with_refresh_state_breakdown(self):
+        """Refresh-attention summary counts are broken out by refresh state."""
+        report = CoverageReport(
+            stale=[
+                StaleMonitor(
+                    table_name="cat.sch.stale",
+                    monitor_id="m1",
+                    refresh_state="stale",
+                    days_since_refresh=45,
+                ),
+                StaleMonitor(
+                    table_name="cat.sch.never",
+                    monitor_id="m2",
+                    refresh_state="never_refreshed",
+                ),
+                StaleMonitor(
+                    table_name="cat.sch.unknown",
+                    monitor_id="m3",
+                    refresh_state="refresh_history_unavailable",
+                ),
+            ],
+        )
+
+        data = report.to_dict()
+
+        assert data["summary"]["refresh_attention_count"] == 3
+        assert data["summary"]["stale_count"] == 1
+        assert data["summary"]["never_refreshed_count"] == 1
+        assert data["summary"]["refresh_history_unavailable_count"] == 1
 
     def test_report_sorted_output(self):
         """Output lists are sorted by table name."""
