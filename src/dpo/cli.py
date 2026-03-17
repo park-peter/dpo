@@ -447,8 +447,16 @@ def coverage(ctx, config_path, output_format):
         if report.stale:
             click.echo("\nSTALE MONITORS:")
             click.echo(tabulate(
-                [[s.table_name, s.days_since_refresh or "never", s.status] for s in report.stale[:20]],
-                headers=["Table", "Days Since Refresh", "Status"],
+                [
+                    [
+                        s.table_name,
+                        s.refresh_state,
+                        s.days_since_refresh if s.days_since_refresh is not None else "-",
+                        s.status,
+                    ]
+                    for s in report.stale[:20]
+                ],
+                headers=["Table", "State", "Days Since Refresh", "Status"],
                 tablefmt="simple",
             ))
 
