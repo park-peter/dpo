@@ -433,7 +433,13 @@ def coverage(ctx, config_path, output_format):
         click.echo(f"Monitored:         {report.total_monitored}")
         click.echo(f"Coverage:          {report.coverage_pct:.1f}%")
         click.echo(f"Unmonitored:       {len(report.unmonitored)}")
-        click.echo(f"Stale monitors:    {len(report.stale)}")
+        summary = report.to_dict()["summary"]
+        click.echo(f"Refresh attention: {summary['refresh_attention_count']}")
+        click.echo(f"Stale monitors:    {summary['stale_count']}")
+        click.echo(f"Never refreshed:   {summary['never_refreshed_count']}")
+        click.echo(
+            f"Refresh unknown:   {summary['refresh_history_unavailable_count']}"
+        )
         click.echo(f"Orphan monitors:   {len(report.orphans)}")
 
         if report.unmonitored:
@@ -445,7 +451,7 @@ def coverage(ctx, config_path, output_format):
             ))
 
         if report.stale:
-            click.echo("\nSTALE MONITORS:")
+            click.echo("\nMONITORS NEEDING REFRESH ATTENTION:")
             click.echo(tabulate(
                 [
                     [

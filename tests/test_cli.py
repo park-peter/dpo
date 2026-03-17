@@ -678,7 +678,7 @@ class TestCoverageCommand:
     def test_coverage_table_output_includes_stale_and_orphans(
         self, runner, valid_config_file, monkeypatch
     ):
-        """Table output should render stale and orphan sections when present."""
+        """Table output should render refresh-attention summary and orphan sections."""
         config = _build_test_config()
         report = CoverageReport(
             total_catalog_tables=2,
@@ -688,12 +688,19 @@ class TestCoverageCommand:
                 StaleMonitor(
                     table_name="prod.ml.predictions",
                     monitor_id="m1",
+                    refresh_state="stale",
                     days_since_refresh=40,
                     status="ACTIVE",
+                ),
+                StaleMonitor(
+                    table_name="prod.ml.cold_start",
+                    monitor_id="m2",
+                    refresh_state="never_refreshed",
+                    status="PAUSED",
                 )
             ],
             orphans=[
-                OrphanMonitor(table_name="prod.ml.orphan", monitor_id="m2")
+                OrphanMonitor(table_name="prod.ml.orphan", monitor_id="m3")
             ],
         )
         analyzer = MagicMock()
@@ -707,7 +714,12 @@ class TestCoverageCommand:
 
         result = runner.invoke(cli, ["coverage", valid_config_file])
         assert result.exit_code == 0
-        assert "STALE MONITORS:" in result.output
+        assert "Refresh attention: 2" in result.output
+        assert "Stale monitors:    1" in result.output
+        assert "Never refreshed:   1" in result.output
+        assert "Refresh unknown:   0" in result.output
+        assert "MONITORS NEEDING REFRESH ATTENTION:" in result.output
+        assert "never_refreshed" in result.output
         assert "ORPHAN MONITORS (not in config):" in result.output
 
     def test_coverage_runtime_error(self, runner, valid_config_file, monkeypatch):
